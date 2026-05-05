@@ -15,7 +15,7 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "z.ai"}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI"}
