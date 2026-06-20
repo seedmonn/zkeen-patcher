@@ -329,17 +329,26 @@ func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 
 	ip := &router.GeoIP{CountryCode: sectionIP}
 	yt := &router.GeoIP{CountryCode: sectionYouTube}
+	var v4, v6 int
 	for _, e := range filtered {
-		if strings.ToUpper(e.CountryCode) == sectionYouTube {
-			yt.Cidr = append(yt.Cidr, e.Cidr...)
-		} else {
-			ip.Cidr = append(ip.Cidr, e.Cidr...)
+		for _, c := range e.Cidr {
+			if len(c.Ip) != 4 {
+				v6++
+				continue
+			}
+			v4++
+			if strings.ToUpper(e.CountryCode) == sectionYouTube {
+				yt.Cidr = append(yt.Cidr, c)
+			} else {
+				ip.Cidr = append(ip.Cidr, c)
+			}
 		}
 	}
 
 	ip.Cidr = dedupCIDRs(ip.Cidr)
 	yt.Cidr = dedupCIDRs(yt.Cidr)
 
+	fmt.Printf("  IPv4 kept: %d, IPv6 dropped: %d\n", v4, v6)
 	fmt.Printf("  IP: %d, YOUTUBE: %d\n", len(ip.Cidr), len(yt.Cidr))
 	return &router.GeoIPList{Entry: []*router.GeoIP{ip, yt}}
 }
