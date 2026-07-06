@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,7 +16,10 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "bllate.org", "z.ai"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "bllate.org", "z.ai", "zyulkov.ru"}
+
+// Single hosts/CIDRs appended to the IP section (bare IP → /32).
+var extraIPs = []string{"77.105.169.97"}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI"}
@@ -345,6 +349,11 @@ func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 		}
 	}
 
+	for _, ipStr := range extraIPs {
+		ip.Cidr = append(ip.Cidr, ipToCIDR(ipStr))
+		fmt.Printf("  Added: %s\n", ipStr)
+	}
+
 	ip.Cidr = dedupCIDRs(ip.Cidr)
 	yt.Cidr = dedupCIDRs(yt.Cidr)
 
@@ -383,6 +392,22 @@ func dedupCIDRs(cidrs []*router.CIDR) []*router.CIDR {
 		}
 	}
 	return result
+}
+
+// ipToCIDR turns a bare IP ("1.2.3.4" → /32) or "ip/prefix" string into a router CIDR.
+func ipToCIDR(s string) *router.CIDR {
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "/") {
+		_, ipnet, err := net.ParseCIDR(s)
+		check(err, "parse CIDR "+s)
+		prefix, _ := ipnet.Mask.Size()
+		return &router.CIDR{Ip: ipnet.IP.To4(), Prefix: uint32(prefix)}
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		check(fmt.Errorf("invalid IP: %s", s), "parse IP "+s)
+	}
+	return &router.CIDR{Ip: ip.To4(), Prefix: 32}
 }
 
 func overlapCount(a, b []*router.Domain) int {
