@@ -22,7 +22,7 @@ var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "bllate
 var extraIPs = []string{"<IP>"}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
-var injectSections = []string{"EHENTAI"}
+var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
 
 var dropSections = map[string]bool{
 	"BYPASS": true, "CN": true, "RU": true,
