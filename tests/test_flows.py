@@ -9,6 +9,7 @@ class FakeDeps:
         self.exec_log = []
         self.xray_alive = True
         self.restart_ok = True
+        self.xkeen_rc = 0
 
     def ssh_connect(self, spec): return "CLIENT"
 
@@ -34,9 +35,11 @@ class FakeDeps:
             if m:
                 tmp, tgt = m.group(1), m.group(2)
                 self.box[tgt] = self.uploads.get(tmp, b"")
-        elif "pgrep -x xray" in cmd:
+        elif "pgrep" in cmd:
             out = "1234\n" if self.xray_alive else ""
             rc = 0 if self.xray_alive else 1
+        elif "xkeen -restart" in cmd:
+            rc = self.xkeen_rc
         elif cmd.startswith("[ -f"):
             # rollback restore: "[ -f <bak> ] && mv -f <bak> <tgt> || true"
             m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
@@ -45,6 +48,8 @@ class FakeDeps:
         return rc, out, ""
 
     def restart_xray(self, base, token, post=None): return self.restart_ok
+
+    sleep = staticmethod(lambda *a, **k: None)
 
 
 def test_apply_xui_skips_when_already_golden():
@@ -68,8 +73,9 @@ def test_apply_xui_writes_and_restarts(tmp_path):
     r = ugf.apply_xui(t, golden, force=False, deps=d)
     assert r["ok"], r["msg"]
     assert d.box["/d/ip.dat"] == b"NEW_IP"
-    assert any("pgrep -x xray" in c for c, _ in d.exec_log)
+    assert any("pgrep" in c for c, _ in d.exec_log)
     assert any(cmd.startswith("sudo -S") for cmd, _ in d.exec_log)  # seedmon used sudo
+    assert any(sd == t["sudo_password"] for cmd, sd in d.exec_log if sd)  # password reached stdin
 
 
 def test_apply_xui_rollback_when_xray_down(tmp_path):
@@ -96,7 +102,7 @@ def test_apply_xui_no_restart_skips_restart(tmp_path):
     assert r["ok"], r["msg"]
     assert "--no-restart" in r["msg"]
     assert d.box["/d/ip.dat"] == b"NEW_IP"
-    assert not any("pgrep -x xray" in c for c, _ in d.exec_log)
+    assert not any("pgrep" in c for c, _ in d.exec_log)
     assert not any(cmd.startswith("restart") for cmd, _ in d.exec_log)
 
 
@@ -111,6 +117,48 @@ def test_apply_router_writes_and_xkeen_restart(tmp_path):
     assert r["ok"], r["msg"]
     assert d.box["/opt/etc/xray/dat/ip.dat"] == b"NEW_IP"
     assert any("xkeen -restart" in c for c, _ in d.exec_log)
+
+
+def test_apply_xui_restart_fails_returns_false(tmp_path):
+    # #1: restartXrayService API fails -> ok=False, but written files stay in place
+    t = {"name": "SPB", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"}, "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps(); d.restart_ok = False
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "restart API failed" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"  # files written, not rolled back
+
+
+def test_apply_router_restart_fails_returns_false(tmp_path):
+    # #1: xkeen -restart returns non-zero -> ok=False, but written files stay in place
+    t = {"name": "ROUTER", "kind": "router", "ssh": {"host": "r", "port": 22, "user": "root", "password": "p"}, "geo_dir": "/opt/etc/xray/dat"}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps(); d.box = {"/opt/etc/xray/dat/ip.dat": b"OLD"}; d.xkeen_rc = 2
+    r = ugf.apply_router(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "xkeen -restart failed" in r["msg"] and "rc=2" in r["msg"]
+    assert d.box["/opt/etc/xray/dat/ip.dat"] == b"NEW_IP"  # files written, not rolled back
+
+
+def test_apply_router_rollback_when_xray_down(tmp_path):
+    # #2: restart succeeds but xray stays down -> rollback, ok=False
+    t = {"name": "ROUTER", "kind": "router", "ssh": {"host": "r", "port": 22, "user": "root", "password": "p"}, "geo_dir": "/opt/etc/xray/dat"}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps(); d.box = {"/opt/etc/xray/dat/ip.dat": b"OLD"}; d.xray_alive = False
+    r = ugf.apply_router(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "rolled back" in r["msg"]
+    assert d.box["/opt/etc/xray/dat/ip.dat"] == b"OLD"  # restored
 
 
 def test_apply_mirror_restart_and_verify():

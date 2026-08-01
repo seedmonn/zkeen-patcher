@@ -39,6 +39,8 @@ def validate_target(t: dict) -> None:
         for k in ("base", "token"):
             if k not in t["panel"]:
                 raise UpdateError(f"target {t['name']} panel missing {k}")
+        if t["ssh"]["user"] != "root" and "sudo_password" not in t:
+            raise UpdateError(f"target {t['name']}: sudo_password required for non-root xui user")
     elif t["kind"] == "router":
         _need(t, "geo_dir")
     elif t["kind"] == "docker-updater":
@@ -177,8 +179,8 @@ def ssh_exec(client, cmd, stdin_data=None):
     stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
     if stdin_data is not None:
         stdin.write(stdin_data); stdin.flush()
-        try: stdin.channel.shutdown_write()
-        except Exception: pass
+    try: stdin.channel.shutdown_write()
+    except Exception: pass
     rc = stdout.channel.recv_exit_status()
     return rc, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
 
@@ -206,6 +208,7 @@ class Deps:
     restart_xray = staticmethod(lambda base, token, post=_http_post: restart_xray(base, token, post))
     restart_container = staticmethod(lambda client, name, deps=None: restart_container(client, name, deps or Deps))
     wait_mirror = staticmethod(lambda mirror, golden, timeout, get=_http_get, sleep=time.sleep: wait_mirror(mirror, golden, timeout, get, sleep))
+    sleep = staticmethod(time.sleep)
 
 def probe_target(t, deps):
     c = deps.ssh_connect(t["ssh"])
@@ -216,7 +219,7 @@ def probe_target(t, deps):
         c.close()
 
 def _post_check_xray(deps, client):
-    rc, out, _ = deps.ssh_exec(client, "pgrep -x xray || pgrep -f '[x]ray -conf'")
+    rc, out, _ = deps.ssh_exec(client, "pgrep -f '[x]ray'")
     return out.strip() != ""
 
 def _restore(client, deps, geo_dir, remote_name):
@@ -249,16 +252,17 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         if no_restart:
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
         ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
-        time.sleep(5)
+        if not ok:
+            return {"ok": False, "msg": f"{name}: restart API failed; files written but xray NOT restarted", "sha": applied}
+        deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
         # rollback
         for remote, _ in FILE_MAP:
             _restore(client, deps, geo_dir, remote)
         deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
-        time.sleep(3)
-        return {"ok": _post_check_xray(deps, client),
-                "msg": f"{name}: xray down after update; rolled back", "sha": applied}
+        deps.sleep(3)
+        return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
         return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
     finally:
@@ -288,14 +292,16 @@ def apply_router(t, golden, force, deps, no_restart=False):
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
         if no_restart:
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
-        deps.ssh_exec(client, "xkeen -restart")
-        time.sleep(5)
+        rc, _, _ = deps.ssh_exec(client, "xkeen -restart")
+        if rc != 0:
+            return {"ok": False, "msg": f"{name}: xkeen -restart failed (rc={rc}); files written but core NOT restarted", "sha": applied}
+        deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
         for remote, _ in FILE_MAP:
             _restore(client, deps, geo_dir, remote)
-        deps.ssh_exec(client, "xkeen -restart"); time.sleep(3)
-        return {"ok": _post_check_xray(deps, client), "msg": f"{name}: xray down; rolled back", "sha": applied}
+        deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
+        return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
         return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
     finally:

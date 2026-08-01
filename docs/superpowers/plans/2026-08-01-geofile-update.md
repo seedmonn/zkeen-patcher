@@ -71,7 +71,7 @@ def test_redact_short_unchanged():
     assert ugf.redact("abc") == "abc"
 
 def test_redact_long_truncated():
-    assert ugf.redact("qeHhFJi47iSkmxBxaFMs", 8) == "qeHhFJi4…"
+    assert ugf.redact("aaaaaaaaaaaaaaaaaaaa", 8) == "aaaaaaaa…"
 
 def test_load_config_and_validate_ok():
     data = {"min_size": 10240, "targets": [
