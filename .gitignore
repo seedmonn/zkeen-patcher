@@ -3,3 +3,5 @@ patch
 /inspect/
 /find/
 /zkeen-patcher
+__pycache__/
+*.pyc

@@ -109,3 +109,16 @@ def test_apply_mirror_restart_and_verify():
     r = ugf.apply_mirror(t, golden, d)
     assert r["ok"], r["msg"]
     assert any("docker restart geo-updater" in c for c, _ in d.exec_log)
+
+
+def test_format_summary_counts():
+    res = [{"name": "MSK", "ok": True}, {"name": "SPB", "ok": False}]
+    s = ugf.format_summary(res)
+    assert "OK 1/2" in s and "SPB" in s
+
+
+def test_render_plan_lists_targets():
+    targets = [{"name": "MSK", "kind": "xui"}, {"name": "ROUTER", "kind": "router"}]
+    golden = {"geoip.dat": {"sha": "a" * 16}, "geosite.dat": {"sha": "b" * 16}}
+    plan = ugf.render_plan(targets, golden)
+    assert "MSK" in plan and "ROUTER" in plan and "geoip.dat" in plan

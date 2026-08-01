@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Update geoip/geosite .dat on all targets and reload xray/xkeen/geo-updater."""
 from __future__ import annotations
-import json, os, shlex, hashlib
+import json, os, shlex, hashlib, argparse
 
 RELEASE_URLS = {
     "geoip.dat": "https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat",
@@ -317,3 +317,72 @@ def apply_mirror(t, golden, deps):
     finally:
         try: client.close()
         except Exception: pass
+
+
+def render_plan(targets, golden):
+    lines = [f"golden: geoip.dat={golden['geoip.dat']['sha'][:12]}… geosite.dat={golden['geosite.dat']['sha'][:12]}…"]
+    for t in targets:
+        lines.append(f"  - {t['name']} ({t['kind']}): restart=" + {
+            "xui": "restartXrayService", "router": "xkeen -restart",
+            "docker-updater": f"docker restart {t.get('container')}"}.get(t["kind"], "?"))
+    return "\n".join(lines)
+
+
+def format_summary(results):
+    ok = sum(1 for r in results if r["ok"])
+    total = len(results)
+    head = f"OK {ok}/{total}"
+    failed = ",".join(r["name"] for r in results if not r["ok"])
+    return head + (f": {failed}" if failed else "")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Update geo .dat on all targets and reload.")
+    p.add_argument("--config", default=os.path.expanduser("~/.config/zkeen-patcher/targets.json"))
+    p.add_argument("--only", help="comma-separated target names")
+    p.add_argument("--force", action="store_true", help="apply even if SHA already matches")
+    p.add_argument("--no-restart", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="preflight + plan only")
+    p.add_argument("-v", "--verbose", action="store_true")
+    args = p.parse_args(argv)
+
+    cfg = load_config(args.config)
+    min_size = cfg.get("min_size", DEFAULT_MIN_SIZE)
+    errors = []
+    for t in cfg["targets"]:
+        try:
+            validate_target(t)
+        except UpdateError as e:
+            errors.append(str(e))
+    if errors:
+        print("config errors:\n" + "\n".join(errors))
+        return 1
+    targets = filter_targets(cfg["targets"], args.only)
+    if not targets:
+        print("no targets selected"); return 2
+
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="zkeen-geo-") as tmp:
+        try:
+            golden = download_release(RELEASE_URLS, tmp, min_size, _http_fetch)
+        except UpdateError as e:
+            print(f"preflight FAILED: {e}"); return 1
+        print(render_plan(targets, golden))
+        if args.dry_run:
+            print("(dry-run)"); return 0
+        deps = Deps
+        results = []
+        for t in targets:
+            if t["kind"] == "xui":      r = apply_xui(t, golden, args.force, deps)
+            elif t["kind"] == "router": r = apply_router(t, golden, args.force, deps)
+            elif t["kind"] == "docker-updater": r = apply_mirror(t, golden, deps)
+            else: r = {"ok": False, "msg": f"{t['name']}: unknown kind", "sha": {}}
+            mark = "✓" if r["ok"] else "✗"
+            print(f"{mark} {r['msg']}")
+            results.append({"name": t["name"], "ok": r["ok"]})
+    print(format_summary(results))
+    return 0 if all(r["ok"] for r in results) else 1
+
+
+if __name__ == "__main__":
+    import sys; sys.exit(main())

@@ -25,6 +25,13 @@ Built daily from latest upstream sources.
 2. Separates YouTube CIDRs into YOUTUBE, rest into IP
 3. Deduplicates all CIDRs
 
+## Auto-update geo files on nodes
+
+`scripts/update_geofiles.py` pushes the latest `geoip.dat`/`geosite.dat` to all
+nodes (3× 3x-ui VPS, router, LAN geo-updater mirror) and reloads them, verified
+by SHA256. See `scripts/README.md`. Secrets live in
+`~/.config/zkeen-patcher/targets.json` (never committed).
+
 ## Build locally
 
 ```bash
