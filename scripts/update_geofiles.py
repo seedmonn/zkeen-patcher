@@ -23,6 +23,20 @@ def load_config(path: str) -> dict:
     with open(path, "r") as f:
         return json.load(f)
 
+def resolve_config(config_path: str, env=None) -> dict:
+    """Load config from the TARGETS_JSON env var if set, else from config_path.
+
+    Enables clone-and-run with creds sourced from a GitHub Variable, e.g.
+    TARGETS_JSON="$(gh variable get TARGETS_JSON)" python3 scripts/update_geofiles.py
+    — no local secrets file required.
+    """
+    if env is None:
+        env = os.environ
+    raw = env.get("TARGETS_JSON")
+    if raw:
+        return json.loads(raw)
+    return load_config(config_path)
+
 def _need(t, *keys):
     for k in keys:
         if k not in t:
@@ -382,7 +396,7 @@ def main(argv=None):
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
-    cfg = load_config(args.config)
+    cfg = resolve_config(args.config)
     min_size = cfg.get("min_size", DEFAULT_MIN_SIZE)
     errors = []
     for t in cfg["targets"]:
