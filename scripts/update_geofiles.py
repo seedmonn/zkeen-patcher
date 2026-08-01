@@ -89,3 +89,22 @@ def filter_targets(targets, only):
         return list(targets)
     want = {x.strip().upper() for x in only.split(",") if x.strip()}
     return [t for t in targets if t["name"].upper() in want]
+
+def download_release(urls, dest_dir, min_size, fetch):
+    golden = {}
+    for name, url in urls.items():
+        data, status = fetch(url)
+        if status != 200:
+            raise UpdateError(f"{name}: HTTP {status} fetching {url}")
+        if len(data) < min_size:
+            raise UpdateError(f"{name}: too small ({len(data)} < {min_size})")
+        path = os.path.join(dest_dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        golden[name] = {"path": path, "sha": sha256_bytes(data), "size": len(data)}
+    return golden
+
+def _http_fetch(url):
+    import requests
+    r = requests.get(url, timeout=60)
+    return (r.content, r.status_code)
