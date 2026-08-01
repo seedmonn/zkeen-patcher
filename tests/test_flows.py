@@ -85,6 +85,21 @@ def test_apply_xui_rollback_when_xray_down(tmp_path):
     assert d.box["/d/ip.dat"] == b"OLD_IP"
 
 
+def test_apply_xui_no_restart_skips_restart(tmp_path):
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"}, "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    r = ugf.apply_xui(t, golden, force=False, deps=d, no_restart=True)
+    assert r["ok"], r["msg"]
+    assert "--no-restart" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"
+    assert not any("pgrep -x xray" in c for c, _ in d.exec_log)
+    assert not any(cmd.startswith("restart") for cmd, _ in d.exec_log)
+
+
 def test_apply_router_writes_and_xkeen_restart(tmp_path):
     t = {"name": "ROUTER", "kind": "router", "ssh": {"host": "r", "port": 22, "user": "root", "password": "p"}, "geo_dir": "/opt/etc/xray/dat"}
     golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
@@ -114,7 +129,14 @@ def test_apply_mirror_restart_and_verify():
 def test_format_summary_counts():
     res = [{"name": "MSK", "ok": True}, {"name": "SPB", "ok": False}]
     s = ugf.format_summary(res)
-    assert "OK 1/2" in s and "SPB" in s
+    assert "FAIL 1/2" in s and "SPB" in s
+
+
+def test_format_summary_full_success():
+    res = [{"name": "MSK", "ok": True}, {"name": "SPB", "ok": True}]
+    s = ugf.format_summary(res)
+    assert "OK 2/2" in s
+    assert ": " not in s
 
 
 def test_render_plan_lists_targets():
