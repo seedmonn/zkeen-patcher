@@ -34,3 +34,60 @@ def test_remote_sha256_command_tries_sha256sum_then_openssl(monkeypatch):
     assert "openssl dgst -sha256" in cmd
     # sha256sum must appear before the openssl fallback
     assert cmd.index("sha256sum") < cmd.index("openssl")
+
+
+import paramiko
+
+
+def _fake_client_factory(connect_fn):
+    """SSHClient fake whose connect() calls connect_fn(attempt_number)."""
+    state = {"n": 0}
+
+    class FakeClient:
+        def set_missing_host_key_policy(self, p):
+            pass
+
+        def connect(self, **kw):
+            state["n"] += 1
+            connect_fn(state["n"])
+
+    return FakeClient, state
+
+
+def test_ssh_connect_retries_on_eof_then_succeeds(monkeypatch):
+    monkeypatch.setattr(ugf.time, "sleep", lambda *a, **k: None)
+
+    def cb(n):
+        if n < 3:
+            raise paramiko.SSHException("EOF during negotiation")
+
+    FakeClient, state = _fake_client_factory(cb)
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: FakeClient())
+    c = ugf.ssh_connect({"host": "h", "port": 22, "user": "root", "password": "p"})
+    assert c is not None and state["n"] == 3
+
+
+def test_ssh_connect_no_retry_on_auth_failure(monkeypatch):
+    monkeypatch.setattr(ugf.time, "sleep", lambda *a, **k: None)
+
+    def cb(n):
+        raise paramiko.AuthenticationException("Permission denied")
+
+    FakeClient, state = _fake_client_factory(cb)
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: FakeClient())
+    with pytest.raises(paramiko.AuthenticationException):
+        ugf.ssh_connect({"host": "h", "port": 22, "user": "root", "password": "p"})
+    assert state["n"] == 1  # auth errors must not be retried
+
+
+def test_ssh_connect_raises_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(ugf.time, "sleep", lambda *a, **k: None)
+
+    def cb(n):
+        raise EOFError("EOF during negotiation")
+
+    FakeClient, state = _fake_client_factory(cb)
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: FakeClient())
+    with pytest.raises(EOFError):
+        ugf.ssh_connect({"host": "h", "port": 22, "user": "root", "password": "p"}, attempts=3)
+    assert state["n"] == 3

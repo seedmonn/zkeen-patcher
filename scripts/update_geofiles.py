@@ -160,10 +160,8 @@ def _http_get(url):
 
 import time
 
-def ssh_connect(spec):
+def ssh_connect(spec, attempts=4):
     import paramiko
-    c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     connect_kwargs = {"hostname": spec["host"], "port": int(spec["port"]),
                       "username": spec["user"], "timeout": 15}
     if spec.get("password"):
@@ -172,8 +170,23 @@ def ssh_connect(spec):
         # key from agent (or default key files)
         connect_kwargs["allow_agent"] = True
         connect_kwargs["look_for_keys"] = True
-    c.connect(**connect_kwargs)
-    return c
+    # Retry transient handshake failures: Keenetic dropbear drops rapid
+    # connections ("EOF during negotiation"). Auth errors are never retried.
+    last = None
+    for i in range(attempts):
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            c.connect(**connect_kwargs)
+            return c
+        except paramiko.AuthenticationException:
+            raise  # config error — never retry
+        except (paramiko.SSHException, EOFError, OSError) as e:
+            last = e
+            if i < attempts - 1:
+                print(f"  [ssh] {spec['user']}@{spec['host']}:{spec['port']} handshake failed ({type(e).__name__}), retry {i+2}/{attempts}…")
+                time.sleep(2 * (i + 1))
+    raise last
 
 def ssh_exec(client, cmd, stdin_data=None):
     stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
