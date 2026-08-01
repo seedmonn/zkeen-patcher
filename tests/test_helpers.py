@@ -24,6 +24,20 @@ def test_load_config_and_validate_ok():
         ugf.validate_target(t)
     os.unlink(path)
 
+def test_resolve_config_from_env_takes_precedence(monkeypatch):
+    data = {"min_size": 999, "targets": [{"name": "X", "kind": "router",
+             "ssh": {"host": "h", "port": 22, "user": "root", "password": "p"}, "geo_dir": "/d"}]}
+    monkeypatch.setenv("TARGETS_JSON", json.dumps(data))
+    cfg = ugf.resolve_config("/nonexistent/path.json")  # env wins, file not touched
+    assert cfg["min_size"] == 999 and cfg["targets"][0]["name"] == "X"
+
+def test_resolve_config_falls_back_to_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("TARGETS_JSON", raising=False)
+    f = tmp_path / "t.json"
+    f.write_text('{"min_size": 10240, "targets": []}')
+    cfg = ugf.resolve_config(str(f))
+    assert cfg["min_size"] == 10240 and cfg["targets"] == []
+
 def test_validate_target_xui_requires_panel():
     with pytest.raises(ugf.UpdateError):
         ugf.validate_target({"name": "X", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"}, "geo_dir": "/d"})
