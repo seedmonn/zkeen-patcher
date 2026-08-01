@@ -204,7 +204,7 @@ class Deps:
     ssh_upload = staticmethod(ssh_upload)
     remote_sha256 = staticmethod(remote_sha256)
     restart_xray = staticmethod(lambda base, token, post=_http_post: restart_xray(base, token, post))
-    restart_container = None  # set in Task 8
+    restart_container = staticmethod(lambda client, name, deps=None: restart_container(client, name, deps or Deps))
     wait_mirror = staticmethod(lambda mirror, golden, timeout, get=_http_get, sleep=time.sleep: wait_mirror(mirror, golden, timeout, get, sleep))
 
 def probe_target(t, deps):
@@ -292,6 +292,26 @@ def apply_router(t, golden, force, deps):
             _restore(client, deps, geo_dir, remote)
         deps.ssh_exec(client, "xkeen -restart"); time.sleep(3)
         return {"ok": _post_check_xray(deps, client), "msg": f"{name}: xray down; rolled back", "sha": applied}
+    except Exception as e:
+        return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
+    finally:
+        try: client.close()
+        except Exception: pass
+
+
+def restart_container(client, name, deps):
+    rc, out, err = deps.ssh_exec(client, f"docker restart {shlex.quote(name)}")
+    return rc == 0
+
+def apply_mirror(t, golden, deps):
+    name, mirror = t["name"], t["mirror"]
+    client = deps.ssh_connect(t["ssh"])
+    try:
+        if not restart_container(client, t["container"], deps):
+            return {"ok": False, "msg": f"{name}: docker restart {t['container']} failed", "sha": {}}
+        if deps.wait_mirror(mirror, golden, DEFAULT_MIRROR_TIMEOUT):
+            return {"ok": True, "msg": f"{name}: geo-updater restarted, mirror verified", "sha": {k:v["sha"] for k,v in golden.items()}}
+        return {"ok": False, "msg": f"{name}: mirror did not converge to golden SHA", "sha": {}}
     except Exception as e:
         return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
     finally:
