@@ -198,9 +198,22 @@ def ssh_exec(client, cmd, stdin_data=None):
     return rc, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
 
 def ssh_upload(client, local, remote):
-    sftp = client.open_sftp()
-    try: sftp.put(local, remote)
-    finally: sftp.close()
+    # Upload via exec (`cat > remote`) rather than SFTP: Keenetic's dropbear
+    # drops the transport when the SFTP subsystem (a 2nd channel) is opened
+    # ("EOF during negotiation"). cat-over-exec uses the exec channel, which
+    # works on every target. Fine for these small binary .dat files (<1 MB).
+    with open(local, "rb") as f:
+        data = f.read()
+    stdin, stdout, stderr = client.exec_command(f"cat > {shlex.quote(remote)}", timeout=60)
+    try:
+        stdin.write(data); stdin.flush()
+        try: stdin.channel.shutdown_write()
+        except Exception: pass
+        rc = stdout.channel.recv_exit_status()
+    except Exception as e:
+        raise UpdateError(f"upload to {remote} failed: {e}")
+    if rc != 0:
+        raise UpdateError(f"upload to {remote} failed (cat rc={rc}): {stderr.read().decode(errors='replace')[:200]}")
 
 def remote_sha256(client, path):
     # try sha256sum, fallback openssl
