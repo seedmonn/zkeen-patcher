@@ -262,3 +262,38 @@ def apply_xui(t, golden, force, deps):
     finally:
         try: client.close()
         except Exception: pass
+
+def apply_router(t, golden, force, deps):
+    name, geo_dir = t["name"], t["geo_dir"]
+    client = deps.ssh_connect(t["ssh"])
+    try:
+        applied = {}
+        for remote, rel in FILE_MAP:
+            tgt = f"{geo_dir}/{remote}"
+            gsha = golden[rel]["sha"]
+            if should_skip_file(deps.remote_sha256(client, tgt), gsha, force):
+                continue
+            tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
+            deps.ssh_upload(client, golden[rel]["path"], tmp)
+            if deps.remote_sha256(client, tmp) != gsha:
+                raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
+            cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
+            deps.ssh_exec(client, cmd)
+            if deps.remote_sha256(client, tgt) != gsha:
+                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            applied[remote] = gsha
+        if not applied:
+            return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
+        deps.ssh_exec(client, "xkeen -restart")
+        time.sleep(5)
+        if _post_check_xray(deps, client):
+            return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
+        for remote, _ in FILE_MAP:
+            _restore(client, deps, geo_dir, remote)
+        deps.ssh_exec(client, "xkeen -restart"); time.sleep(3)
+        return {"ok": _post_check_xray(deps, client), "msg": f"{name}: xray down; rolled back", "sha": applied}
+    except Exception as e:
+        return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
+    finally:
+        try: client.close()
+        except Exception: pass
