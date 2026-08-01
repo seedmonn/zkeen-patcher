@@ -22,13 +22,10 @@ var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "bllate
 var extraIPs = []string{"77.105.169.97"}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
-var injectSections = []string{"EHENTAI"}
+var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
 
 // dlc.dat section names routed into the separate GEMINI section (carved out of DOMAINS).
 var geminiSections = []string{"GOOGLE-DEEPMIND"}
-
-// zkeenip.dat section names carved into the separate GOOGLE geoip section (additive — also stay in IP).
-var googleIPSections = []string{"GOOGLE"}
 
 var dropSections = map[string]bool{
 	"BYPASS": true, "CN": true, "RU": true,
@@ -39,7 +36,6 @@ const (
 	sectionYouTube = "YOUTUBE"
 	sectionIP      = "IP"
 	sectionGemini  = "GEMINI"
-	sectionGoogle  = "GOOGLE"
 )
 
 func isYouTube(d *router.Domain) bool {
@@ -61,7 +57,6 @@ func main() {
 	dlcPath := flag.String("dlc", "", "Local dlc.dat (overrides URL)")
 	ehentaiName := flag.String("inject", "", "Comma-separated dlc.dat section names to inject into DOMAINS (overrides defaults)")
 	geminiName := flag.String("gemini", "", "Comma-separated dlc.dat section names to route into GEMINI (overrides defaults)")
-	googleIPName := flag.String("google-ip", "", "Comma-separated zkeenip.dat section names to route into GOOGLE geoip (overrides defaults)")
 	outputDir := flag.String("out", ".", "Output directory")
 	flag.Parse()
 
@@ -109,14 +104,6 @@ func main() {
 	// ── Step 6: zkeenip-patched.dat ──
 	fmt.Println("\n=== Step 6: zkeenip → zkeenip-patched ===")
 	zkeenipPatched := patchZkeenip(zkeenip)
-
-	// ── Step 7: carve out GOOGLE geoip section ──
-	gIPSections := googleIPSections
-	if *googleIPName != "" {
-		gIPSections = strings.Split(strings.ToUpper(*googleIPName), ",")
-	}
-	fmt.Println("\n=== Step 7: add GOOGLE (geoip) ===")
-	zkeenipPatched = buildGoogleIP(zkeenipPatched, zkeenip, gIPSections)
 	writeGeoIP(zkeenipPatched, *outputDir+"/zkeenip-patched.dat")
 
 	fmt.Println("\n=== Done ===")
@@ -405,34 +392,6 @@ func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 	fmt.Printf("  IPv4 kept: %d, IPv6 dropped: %d\n", v4, v6)
 	fmt.Printf("  IP: %d, YOUTUBE: %d\n", len(ip.Cidr), len(yt.Cidr))
 	return &router.GeoIPList{Entry: []*router.GeoIP{ip, yt}}
-}
-
-// ── Step 7: append GOOGLE geoip section (IPv4-only, deduped, additive) ──
-
-func buildGoogleIP(patched *router.GeoIPList, zkeenip *router.GeoIPList, sectionNames []string) *router.GeoIPList {
-	want := map[string]bool{}
-	for _, n := range sectionNames {
-		want[strings.ToUpper(strings.TrimSpace(n))] = true
-	}
-	google := &router.GeoIP{CountryCode: sectionGoogle}
-	for _, e := range zkeenip.Entry {
-		if !want[strings.ToUpper(e.CountryCode)] {
-			continue
-		}
-		var kept []*router.CIDR
-		for _, c := range e.Cidr {
-			if len(c.Ip) != 4 { // IPv4-only, consistent with patchZkeenip
-				continue
-			}
-			kept = append(kept, c)
-		}
-		google.Cidr = append(google.Cidr, kept...)
-		fmt.Printf("  GOOGLE <- %s (%d IPv4 CIDRs)\n", e.CountryCode, len(kept))
-	}
-	google.Cidr = dedupCIDRs(google.Cidr)
-	fmt.Printf("  GOOGLE total: %d IPv4 CIDRs\n", len(google.Cidr))
-	patched.Entry = append(patched.Entry, google)
-	return patched
 }
 
 // ── Dedup helpers ──

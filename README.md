@@ -7,7 +7,7 @@ Combines domain routing lists from [zkeen-domains](https://github.com/jameszeroX
 | File | Description | Sections |
 |---|---|---|
 | [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI |
-| [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE, GOOGLE |
+| [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE |
 
 Built daily from latest upstream sources.
 
@@ -24,7 +24,6 @@ Built daily from latest upstream sources.
 1. Downloads `zkeenip.dat` — removes CN, RU
 2. Separates YouTube CIDRs into YOUTUBE, rest into IP
 3. Deduplicates all CIDRs
-4. Carves out a separate `GOOGLE` section from a zkeenip.dat category (default `google`)
 
 ## Build locally
 
@@ -44,7 +43,6 @@ go run . -out .
 | `-out` | `.` | Output directory |
 | `-inject` | (built-in) | Comma-separated dlc.dat sections to inject into DOMAINS |
 | `-gemini` | (built-in) | Comma-separated dlc.dat sections to carve into `GEMINI` |
-| `-google-ip` | (built-in) | Comma-separated zkeenip.dat sections to carve into `GOOGLE` (geoip) |
 
 Use local files to avoid downloading:
 ```bash
