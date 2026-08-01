@@ -9,12 +9,12 @@ def test_redact_long_truncated():
 
 def test_load_config_and_validate_ok():
     data = {"min_size": 10240, "targets": [
-        {"name": "MSK", "kind": "xui", "ssh": {"host": "1.2.3.4", "port": 22, "user": "root"},
-         "geo_dir": "/usr/local/x-ui/bin", "panel": {"base": "https://1.2.3.4:31441/abc", "token": "tok"}},
-        {"name": "ROUTER", "kind": "router", "ssh": {"host": "192.168.1.1", "port": 22, "user": "root", "password": "p"},
+        {"name": "MSK", "kind": "xui", "ssh": {"host": "192.0.2.10", "port": 22, "user": "root"},
+         "geo_dir": "/usr/local/x-ui/bin", "panel": {"base": "https://192.0.2.10:31441/abc", "token": "tok"}},
+        {"name": "ROUTER", "kind": "router", "ssh": {"host": "192.0.2.1", "port": 22, "user": "root", "password": "p"},
          "geo_dir": "/opt/etc/xray/dat"},
-        {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "192.168.1.101", "port": 20202, "user": "ginseng"},
-         "container": "geo-updater", "mirror": "http://192.168.1.101:33133"},
+        {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "192.0.2.101", "port": 20202, "user": "u"},
+         "container": "geo-updater", "mirror": "http://192.0.2.101:33133"},
     ]}
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(data, f); path = f.name

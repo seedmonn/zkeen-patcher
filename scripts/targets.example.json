@@ -2,10 +2,15 @@
   "min_size": 10240,
   "mirror_timeout": 30,
   "targets": [
-    {"name": "MSK",  "kind": "xui", "ssh": {"host": "<IP>", "port": 22, "user": "root"}, "geo_dir": "/usr/local/x-ui/bin", "panel": {"base": "https://<IP>:31441/<basePath_MSK>", "token": "<TOKEN_MSK>"}},
-    {"name": "SPB",  "kind": "xui", "ssh": {"host": "<IP>", "port": 53908, "user": "seedmon"}, "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://<PANEL_HOST>:8443/<basePath_SPB>", "token": "<TOKEN_SPB>"}},
-    {"name": "EST",  "kind": "xui", "ssh": {"host": "<IP>", "port": 53908, "user": "seedmon"}, "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://<PANEL_HOST>:8443/<basePath_EST>", "token": "<TOKEN_EST>"}},
-    {"name": "ROUTER", "kind": "router", "ssh": {"host": "192.168.1.1", "port": 22, "user": "root", "password": "<ROUTER_PASSWORD>"}, "geo_dir": "/opt/etc/xray/dat"},
-    {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "192.168.1.101", "port": 20202, "user": "ginseng"}, "container": "geo-updater", "mirror": "http://192.168.1.101:33133"}
+    {"name": "MSK",  "kind": "xui", "ssh": {"host": "<HOST>", "port": 22, "user": "root"},
+     "geo_dir": "/usr/local/x-ui/bin", "panel": {"base": "https://<PANEL_HOST>:<PORT>/<basePath>", "token": "<TOKEN>"}},
+    {"name": "SPB",  "kind": "xui", "ssh": {"host": "<HOST>", "port": 53908, "user": "<USER>"},
+     "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://<PANEL_HOST>:<PORT>/<basePath>", "token": "<TOKEN>"}},
+    {"name": "EST",  "kind": "xui", "ssh": {"host": "<HOST>", "port": 53908, "user": "<USER>"},
+     "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://<PANEL_HOST>:<PORT>/<basePath>", "token": "<TOKEN>"}},
+    {"name": "ROUTER", "kind": "router", "ssh": {"host": "<LAN_HOST>", "port": 22, "user": "root", "password": "<ROUTER_PASSWORD>"},
+     "geo_dir": "/opt/etc/xray/dat"},
+    {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "<LAN_HOST>", "port": 20202, "user": "<USER>"},
+     "container": "geo-updater", "mirror": "http://<LAN_HOST>:33133"}
   ]
 }
