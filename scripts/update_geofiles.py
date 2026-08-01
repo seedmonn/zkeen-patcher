@@ -224,7 +224,7 @@ def _restore(client, deps, geo_dir, remote_name):
     tgt = f"{geo_dir}/{remote_name}"
     deps.ssh_exec(client, f"[ -f {shlex.quote(bak)} ] && mv -f {shlex.quote(bak)} {shlex.quote(tgt)} || true")
 
-def apply_xui(t, golden, force, deps):
+def apply_xui(t, golden, force, deps, no_restart=False):
     name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
     sudo_pw = t.get("sudo_password")
     client = deps.ssh_connect(t["ssh"])
@@ -246,6 +246,8 @@ def apply_xui(t, golden, force, deps):
             applied[remote] = gsha
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
+        if no_restart:
+            return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
         ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         time.sleep(5)
         if _post_check_xray(deps, client):
@@ -263,7 +265,7 @@ def apply_xui(t, golden, force, deps):
         try: client.close()
         except Exception: pass
 
-def apply_router(t, golden, force, deps):
+def apply_router(t, golden, force, deps, no_restart=False):
     name, geo_dir = t["name"], t["geo_dir"]
     client = deps.ssh_connect(t["ssh"])
     try:
@@ -284,6 +286,8 @@ def apply_router(t, golden, force, deps):
             applied[remote] = gsha
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
+        if no_restart:
+            return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
         deps.ssh_exec(client, "xkeen -restart")
         time.sleep(5)
         if _post_check_xray(deps, client):
@@ -331,7 +335,7 @@ def render_plan(targets, golden):
 def format_summary(results):
     ok = sum(1 for r in results if r["ok"])
     total = len(results)
-    head = f"OK {ok}/{total}"
+    head = f"OK {ok}/{total}" if ok == total else f"FAIL {ok}/{total}"
     failed = ",".join(r["name"] for r in results if not r["ok"])
     return head + (f": {failed}" if failed else "")
 
@@ -373,8 +377,12 @@ def main(argv=None):
         deps = Deps
         results = []
         for t in targets:
-            if t["kind"] == "xui":      r = apply_xui(t, golden, args.force, deps)
-            elif t["kind"] == "router": r = apply_router(t, golden, args.force, deps)
+            if t["kind"] == "docker-updater" and args.no_restart:
+                print(f"✓ {t['name']}: skipped (--no-restart; mirror needs restart to fetch)")
+                results.append({"name": t["name"], "ok": True})
+                continue
+            if t["kind"] == "xui":      r = apply_xui(t, golden, args.force, deps, no_restart=args.no_restart)
+            elif t["kind"] == "router": r = apply_router(t, golden, args.force, deps, no_restart=args.no_restart)
             elif t["kind"] == "docker-updater": r = apply_mirror(t, golden, deps)
             else: r = {"ok": False, "msg": f"{t['name']}: unknown kind", "sha": {}}
             mark = "✓" if r["ok"] else "✗"
