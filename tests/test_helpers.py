@@ -5,7 +5,7 @@ def test_redact_short_unchanged():
     assert ugf.redact("abc") == "abc"
 
 def test_redact_long_truncated():
-    assert ugf.redact("qeHhFJi47iSkmxBxaFMs", 8) == "qeHhFJi4…"
+    assert ugf.redact("aaaaaaaaaaaaaaaaaaaa", 8) == "aaaaaaaa…"
 
 def test_load_config_and_validate_ok():
     data = {"min_size": 10240, "targets": [
@@ -27,6 +27,22 @@ def test_load_config_and_validate_ok():
 def test_validate_target_xui_requires_panel():
     with pytest.raises(ugf.UpdateError):
         ugf.validate_target({"name": "X", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"}, "geo_dir": "/d"})
+
+def test_validate_target_xui_non_root_requires_sudo_password():
+    # #6: non-root xui user must carry sudo_password; root is unaffected
+    with pytest.raises(ugf.UpdateError, match="sudo_password required"):
+        ugf.validate_target({"name": "SPB", "kind": "xui",
+                             "ssh": {"host": "h", "port": 22, "user": "seedmon"},
+                             "geo_dir": "/d", "panel": {"base": "b", "token": "t"}})
+    # root xui without sudo_password still validates
+    ugf.validate_target({"name": "MSK", "kind": "xui",
+                         "ssh": {"host": "h", "port": 22, "user": "root"},
+                         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}})
+    # non-root xui WITH sudo_password validates
+    ugf.validate_target({"name": "SPB", "kind": "xui",
+                         "ssh": {"host": "h", "port": 22, "user": "seedmon"},
+                         "geo_dir": "/d", "sudo_password": "PW",
+                         "panel": {"base": "b", "token": "t"}})
 
 def test_sha256_bytes_and_file():
     data = b"hello world"

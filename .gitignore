@@ -5,3 +5,4 @@ patch
 /zkeen-patcher
 __pycache__/
 *.pyc
+scripts/targets.json
