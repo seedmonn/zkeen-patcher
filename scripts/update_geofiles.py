@@ -155,3 +155,62 @@ def _http_get(url):
     import requests
     r = requests.get(url, timeout=15)
     return (r.content, r.status_code)
+
+import time
+
+def ssh_connect(spec):
+    import paramiko
+    c = paramiko.SSHClient()
+    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    connect_kwargs = {"hostname": spec["host"], "port": int(spec["port"]),
+                      "username": spec["user"], "timeout": 15}
+    if spec.get("password"):
+        connect_kwargs["password"] = spec["password"]
+    else:
+        # key from agent (or default key files)
+        connect_kwargs["allow_agent"] = True
+        connect_kwargs["look_for_keys"] = True
+    c.connect(**connect_kwargs)
+    return c
+
+def ssh_exec(client, cmd, stdin_data=None):
+    stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
+    if stdin_data is not None:
+        stdin.write(stdin_data); stdin.flush()
+        try: stdin.channel.shutdown_write()
+        except Exception: pass
+    rc = stdout.channel.recv_exit_status()
+    return rc, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
+
+def ssh_upload(client, local, remote):
+    sftp = client.open_sftp()
+    try: sftp.put(local, remote)
+    finally: sftp.close()
+
+def remote_sha256(client, path):
+    # try sha256sum, fallback openssl
+    rc, out, _ = ssh_exec(client, f"sha256sum {shlex.quote(path)} 2>/dev/null || openssl dgst -sha256 {shlex.quote(path)} 2>/dev/null")
+    out = out.strip()
+    if not out:
+        return None
+    # sha256sum: "<hex>  <path>"; openssl: "SHA256(<path>)= <hex>"
+    token = out.split()[0]
+    return token if all(c in "0123456789abcdef" for c in token) and len(token) == 64 else (out.split("=")[-1].strip() or None)
+
+class Deps:
+    """Real I/O backend. Tests pass a fake with the same methods."""
+    ssh_connect = staticmethod(ssh_connect)
+    ssh_exec = staticmethod(ssh_exec)
+    ssh_upload = staticmethod(ssh_upload)
+    remote_sha256 = staticmethod(remote_sha256)
+    restart_xray = staticmethod(lambda base, token, post=_http_post: restart_xray(base, token, post))
+    restart_container = None  # set in Task 8
+    wait_mirror = staticmethod(lambda mirror, golden, timeout, get=_http_get, sleep=time.sleep: wait_mirror(mirror, golden, timeout, get, sleep))
+
+def probe_target(t, deps):
+    c = deps.ssh_connect(t["ssh"])
+    try:
+        rc, out, _ = deps.ssh_exec(c, "id; uname -a; command -v sha256sum openssl docker xkeen 2>/dev/null; echo END")
+        print(f"[probe] {t['name']}: rc={rc}\n{out}")
+    finally:
+        c.close()
