@@ -6,3 +6,4 @@ patch
 __pycache__/
 *.pyc
 scripts/targets.json
+docs/superpowers/
