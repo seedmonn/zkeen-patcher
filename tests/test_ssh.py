@@ -91,3 +91,75 @@ def test_ssh_connect_raises_after_exhausting_retries(monkeypatch):
     with pytest.raises(EOFError):
         ugf.ssh_connect({"host": "h", "port": 22, "user": "root", "password": "p"}, attempts=3)
     assert state["n"] == 3
+
+
+def test_ssh_upload_uses_cat_over_exec(tmp_path):
+    # Keenetic dropbear breaks on SFTP; upload must go via `cat > remote` on the exec channel.
+    f = tmp_path / "geo.bin"
+    f.write_bytes(b"HELLO\x00BIN")
+    recorded = {}
+
+    class FakeChan:
+        def shutdown_write(self):
+            recorded["shutdown"] = True
+
+        def recv_exit_status(self):
+            return 0
+
+    class FakeStream:
+        def __init__(self, chan):
+            self.channel = chan
+
+        def write(self, data):
+            recorded["data"] = data
+
+        def flush(self):
+            pass
+
+        def read(self):
+            return b""
+
+    class FakeClient:
+        def exec_command(self, cmd, timeout=None):
+            recorded["cmd"] = cmd
+            ch = FakeChan()
+            return FakeStream(ch), FakeStream(ch), FakeStream(ch)
+
+    ugf.ssh_upload(FakeClient(), str(f), "/tmp/x.dat")
+    assert recorded["cmd"] == "cat > /tmp/x.dat"
+    assert recorded["data"] == b"HELLO\x00BIN"
+    assert recorded.get("shutdown") is True
+
+
+def test_ssh_upload_raises_on_nonzero_rc(tmp_path):
+    f = tmp_path / "geo.bin"
+    f.write_bytes(b"data")
+
+    class FakeChan:
+        def shutdown_write(self):
+            pass
+
+        def recv_exit_status(self):
+            return 1  # cat failed
+
+    class FakeStream:
+        def __init__(self, chan, payload=b""):
+            self.channel = chan
+            self._payload = payload
+
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def read(self):
+            return self._payload
+
+    class FakeClient:
+        def exec_command(self, cmd, timeout=None):
+            ch = FakeChan()
+            return FakeStream(ch), FakeStream(ch), FakeStream(ch, b"no space")
+
+    with pytest.raises(ugf.UpdateError):
+        ugf.ssh_upload(FakeClient(), str(f), "/tmp/x.dat")
