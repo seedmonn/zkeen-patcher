@@ -1,0 +1,11 @@
+{
+  "min_size": 10240,
+  "mirror_timeout": 30,
+  "targets": [
+    {"name": "MSK",  "kind": "xui", "ssh": {"host": "77.105.169.97", "port": 22, "user": "root"}, "geo_dir": "/usr/local/x-ui/bin", "panel": {"base": "https://77.105.169.97:31441/<basePath_MSK>", "token": "<TOKEN_MSK>"}},
+    {"name": "SPB",  "kind": "xui", "ssh": {"host": "212.67.12.230", "port": 53908, "user": "seedmon"}, "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://rus-panel.zyulkov.ru:8443/<basePath_SPB>", "token": "<TOKEN_SPB>"}},
+    {"name": "EST",  "kind": "xui", "ssh": {"host": "38.180.164.100", "port": 53908, "user": "seedmon"}, "geo_dir": "/usr/local/x-ui/bin", "sudo_password": "<SUDO_PASSWORD>", "panel": {"base": "https://est-panel.zyulkov.ru:8443/<basePath_EST>", "token": "<TOKEN_EST>"}},
+    {"name": "ROUTER", "kind": "router", "ssh": {"host": "192.168.1.1", "port": 22, "user": "root", "password": "<ROUTER_PASSWORD>"}, "geo_dir": "/opt/etc/xray/dat"},
+    {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "192.168.1.101", "port": 20202, "user": "ginseng"}, "container": "geo-updater", "mirror": "http://192.168.1.101:33133"}
+  ]
+}
