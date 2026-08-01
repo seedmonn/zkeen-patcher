@@ -83,3 +83,16 @@ def test_apply_xui_rollback_when_xray_down(tmp_path):
     assert r["ok"] is False
     # rollback restored originals
     assert d.box["/d/ip.dat"] == b"OLD_IP"
+
+
+def test_apply_router_writes_and_xkeen_restart(tmp_path):
+    t = {"name": "ROUTER", "kind": "router", "ssh": {"host": "r", "port": 22, "user": "root", "password": "p"}, "geo_dir": "/opt/etc/xray/dat"}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps(); d.box = {"/opt/etc/xray/dat/ip.dat": b"OLD"}
+    r = ugf.apply_router(t, golden, force=False, deps=d)
+    assert r["ok"], r["msg"]
+    assert d.box["/opt/etc/xray/dat/ip.dat"] == b"NEW_IP"
+    assert any("xkeen -restart" in c for c, _ in d.exec_log)
