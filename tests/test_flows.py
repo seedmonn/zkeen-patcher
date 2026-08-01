@@ -96,3 +96,16 @@ def test_apply_router_writes_and_xkeen_restart(tmp_path):
     assert r["ok"], r["msg"]
     assert d.box["/opt/etc/xray/dat/ip.dat"] == b"NEW_IP"
     assert any("xkeen -restart" in c for c, _ in d.exec_log)
+
+
+def test_apply_mirror_restart_and_verify():
+    sha = ugf.sha256_bytes(b"FRESH")
+    t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "ginseng"},
+         "container": "geo-updater", "mirror": "http://m:33133"}
+    golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": sha}, "geosite.dat": {"path": "/g/geosite.dat", "sha": sha}}
+    class MD(FakeDeps):
+        def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None): return True
+    d = MD()
+    r = ugf.apply_mirror(t, golden, d)
+    assert r["ok"], r["msg"]
+    assert any("docker restart geo-updater" in c for c, _ in d.exec_log)
