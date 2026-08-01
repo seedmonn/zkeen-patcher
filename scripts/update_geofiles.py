@@ -108,3 +108,47 @@ def _http_fetch(url):
     import requests
     r = requests.get(url, timeout=60)
     return (r.content, r.status_code)
+
+def restart_xray(base, token, post):
+    headers = {"Authorization": f"Bearer {token}"}
+    for url in restart_urls(base):
+        try:
+            text, status = post(url, headers=headers, data=b"", verify=False, timeout=30)
+        except Exception:
+            continue
+        if status == 404:
+            continue
+        if parse_restart_response(text):
+            return True
+    return False
+
+def mirror_sha(mirror, remote_name, get):
+    try:
+        data, status = get(f"{mirror.rstrip('/')}/{remote_name}")
+    except Exception:
+        return None
+    if status != 200:
+        return None
+    return sha256_bytes(data)
+
+def wait_mirror(mirror, golden, timeout, get, sleep):
+    # golden keyed by release name; mirror serves remote names -> map via FILE_MAP
+    want = {remote: golden[rel]["sha"] for remote, rel in FILE_MAP if rel in golden}
+    deadline = timeout
+    while deadline >= 0:
+        ok = all(mirror_sha(mirror, remote, get) == sha for remote, sha in want.items())
+        if ok:
+            return True
+        sleep(2)
+        deadline -= 2
+    return False
+
+def _http_post(url, headers, data, verify, timeout):
+    import requests
+    r = requests.post(url, headers=headers, data=data, verify=verify, timeout=timeout)
+    return (r.text, r.status_code)
+
+def _http_get(url):
+    import requests
+    r = requests.get(url, timeout=15)
+    return (r.content, r.status_code)
