@@ -27,3 +27,46 @@ def test_load_config_and_validate_ok():
 def test_validate_target_xui_requires_panel():
     with pytest.raises(ugf.UpdateError):
         ugf.validate_target({"name": "X", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"}, "geo_dir": "/d"})
+
+def test_sha256_bytes_and_file():
+    data = b"hello world"
+    assert ugf.sha256_bytes(data) == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(data); p = f.name
+    assert ugf.sha256_file(p) == ugf.sha256_bytes(data); os.unlink(p)
+
+def test_should_skip_file():
+    assert ugf.should_skip_file("abc", "abc", False) is True
+    assert ugf.should_skip_file("abc", "abc", True) is False
+    assert ugf.should_skip_file(None, "abc", False) is False
+    assert ugf.should_skip_file("abc", "other", False) is False
+
+def test_needs_sudo():
+    assert ugf.needs_sudo("root") is False
+    assert ugf.needs_sudo("seedmon") is True
+
+def test_restart_urls_order():
+    urls = ugf.restart_urls("https://h:8443/abc/")
+    assert urls[0] == "https://h:8443/abc/panel/api/server/restartXrayService"
+    assert urls[1] == "https://h:8443/abc/xui/API/server/restartXrayService"
+
+def test_parse_restart_response():
+    assert ugf.parse_restart_response('{"success":true,"msg":"x"}') is True
+    assert ugf.parse_restart_response('{"success":false}') is False
+    assert ugf.parse_restart_response('not json') is False
+
+def test_build_apply_command_root_has_no_sudo():
+    cmd, stdin = ugf.build_apply_command("/d", "ip.dat", "/tmp/x", "root")
+    assert "sudo" not in cmd and stdin is None
+    assert "mv -f /tmp/x /d/ip.dat" in cmd and ".bak" in cmd
+
+def test_build_apply_command_seedmon_uses_sudo_S():
+    cmd, stdin = ugf.build_apply_command("/d", "ip.dat", "/tmp/x", "seedmon")
+    assert cmd.startswith("sudo -S -p ''") and stdin == "PW"
+
+def test_filter_targets():
+    ts = [{"name": "MSK"}, {"name": "SPB"}]
+    assert [t["name"] for t in ugf.filter_targets(ts, None)] == ["MSK", "SPB"]
+    assert [t["name"] for t in ugf.filter_targets(ts, "MSK")] == ["MSK"]
+    assert [t["name"] for t in ugf.filter_targets(ts, "msk,SPB")] == ["MSK", "SPB"]

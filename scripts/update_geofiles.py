@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Update geoip/geosite .dat on all targets and reload xray/xkeen/geo-updater."""
 from __future__ import annotations
-import json, os
+import json, os, shlex, hashlib
 
 RELEASE_URLS = {
     "geoip.dat": "https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat",
@@ -45,3 +45,47 @@ def validate_target(t: dict) -> None:
         _need(t, "container", "mirror")
     else:
         raise UpdateError(f"target {t['name']} unknown kind {t['kind']}")
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def should_skip_file(remote_sha, golden_sha, force) -> bool:
+    return (not force) and remote_sha is not None and remote_sha == golden_sha
+
+def needs_sudo(user: str) -> bool:
+    return user != "root"
+
+def restart_urls(base: str) -> list:
+    b = base.rstrip("/")
+    return [f"{b}/panel/api/server/restartXrayService",
+            f"{b}/xui/API/server/restartXrayService"]
+
+def parse_restart_response(text: str) -> bool:
+    try:
+        return bool(json.loads(text).get("success"))
+    except Exception:
+        return False
+
+def build_apply_command(geo_dir, remote_name, tmp_path, user):
+    target = f"{geo_dir}/{remote_name}"
+    bak = f"{target}.bak"
+    inner = (f"cp -f {shlex.quote(target)} {shlex.quote(bak)} 2>/dev/null || true; "
+             f"mv -f {shlex.quote(tmp_path)} {shlex.quote(target)}; "
+             f"chmod 644 {shlex.quote(target)}; chown root:root {shlex.quote(target)}")
+    if not needs_sudo(user):
+        return (f"sh -c {shlex.quote(inner)}", None)
+    # sudo -S reads password from stdin (no-op if NOPASSWD); password never hits argv
+    return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
+
+def filter_targets(targets, only):
+    if not only:
+        return list(targets)
+    want = {x.strip().upper() for x in only.split(",") if x.strip()}
+    return [t for t in targets if t["name"].upper() in want]
