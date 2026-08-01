@@ -214,3 +214,51 @@ def probe_target(t, deps):
         print(f"[probe] {t['name']}: rc={rc}\n{out}")
     finally:
         c.close()
+
+def _post_check_xray(deps, client):
+    rc, out, _ = deps.ssh_exec(client, "pgrep -x xray || pgrep -f '[x]ray -conf'")
+    return out.strip() != ""
+
+def _restore(client, deps, geo_dir, remote_name):
+    bak = f"{geo_dir}/{remote_name}.bak"
+    tgt = f"{geo_dir}/{remote_name}"
+    deps.ssh_exec(client, f"[ -f {shlex.quote(bak)} ] && mv -f {shlex.quote(bak)} {shlex.quote(tgt)} || true")
+
+def apply_xui(t, golden, force, deps):
+    name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
+    sudo_pw = t.get("sudo_password")
+    client = deps.ssh_connect(t["ssh"])
+    try:
+        applied = {}
+        for remote, rel in FILE_MAP:
+            tgt = f"{geo_dir}/{remote}"
+            gsha = golden[rel]["sha"]
+            if should_skip_file(deps.remote_sha256(client, tgt), gsha, force):
+                continue
+            tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
+            deps.ssh_upload(client, golden[rel]["path"], tmp)
+            if deps.remote_sha256(client, tmp) != gsha:
+                raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
+            cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
+            deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+            if deps.remote_sha256(client, tgt) != gsha:
+                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            applied[remote] = gsha
+        if not applied:
+            return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
+        ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
+        time.sleep(5)
+        if _post_check_xray(deps, client):
+            return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
+        # rollback
+        for remote, _ in FILE_MAP:
+            _restore(client, deps, geo_dir, remote)
+        deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
+        time.sleep(3)
+        return {"ok": _post_check_xray(deps, client),
+                "msg": f"{name}: xray down after update; rolled back", "sha": applied}
+    except Exception as e:
+        return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
+    finally:
+        try: client.close()
+        except Exception: pass
