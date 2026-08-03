@@ -16,7 +16,7 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "ranobelib.me", "bllate.org", "z.ai", "<DOMAIN>"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "<DOMAIN>"}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32).
 var extraIPs = []string{"<IP>"}
