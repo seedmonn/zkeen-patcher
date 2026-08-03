@@ -19,7 +19,7 @@ var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyou
 var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "<DOMAIN>"}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32).
-var extraIPs = []string{"<IP>"}
+var extraIPs = []string{"<IP>", "<IP>", "<IP>"}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
