@@ -100,6 +100,17 @@ def build_apply_command(geo_dir, remote_name, tmp_path, user):
     # sudo -S reads password from stdin (no-op if NOPASSWD); password never hits argv
     return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
 
+def build_restore_command(geo_dir, remote_name, user):
+    """Restore geo_dir/remote_name from its .bak. Must use sudo for non-root:
+    apply chowns targets to root:root, so a plain mv as the SSH user fails
+    silently and leaves the bad file in place while reporting 'rolled back'."""
+    bak = f"{geo_dir}/{remote_name}.bak"
+    tgt = f"{geo_dir}/{remote_name}"
+    inner = f"[ -f {shlex.quote(bak)} ] && mv -f {shlex.quote(bak)} {shlex.quote(tgt)} || true"
+    if not needs_sudo(user):
+        return (f"sh -c {shlex.quote(inner)}", None)
+    return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
+
 def filter_targets(targets, only):
     if not only:
         return list(targets)
@@ -262,17 +273,16 @@ def _post_check_xray(deps, client):
     rc, out, _ = deps.ssh_exec(client, "pgrep -f '[x]ray'")
     return out.strip() != ""
 
-def _restore(client, deps, geo_dir, remote_name):
-    bak = f"{geo_dir}/{remote_name}.bak"
-    tgt = f"{geo_dir}/{remote_name}"
-    deps.ssh_exec(client, f"[ -f {shlex.quote(bak)} ] && mv -f {shlex.quote(bak)} {shlex.quote(tgt)} || true")
+def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None):
+    cmd, stdin = build_restore_command(geo_dir, remote_name, user)
+    deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
 
 def apply_xui(t, golden, force, deps, no_restart=False):
     name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
     sudo_pw = t.get("sudo_password")
     client = deps.ssh_connect(t["ssh"])
+    applied = {}
     try:
-        applied = {}
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
@@ -284,9 +294,11 @@ def apply_xui(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
             deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+            # Track before verify: mv already replaced the target, so a failed
+            # SHA check must still roll this file back via .bak.
+            applied[remote] = gsha
             if deps.remote_sha256(client, tgt) != gsha:
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
-            applied[remote] = gsha
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
         if no_restart:
@@ -300,12 +312,20 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         # rollback — only files written this run; restoring untouched files
         # would clobber them with a stale .bak left over from a prior apply.
         for remote in applied:
-            _restore(client, deps, geo_dir, remote)
+            _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
         deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
-        return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
+        # Mid-apply failure (SHA mismatch, SSH drop, …) must not leave a
+        # partial update on disk — roll back whatever this run already wrote.
+        for remote in applied:
+            try:
+                _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
+            except Exception:
+                pass
+        suffix = "; rolled back" if applied else ""
+        return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
     finally:
         try: client.close()
         except Exception: pass
@@ -313,8 +333,8 @@ def apply_xui(t, golden, force, deps, no_restart=False):
 def apply_router(t, golden, force, deps, no_restart=False):
     name, geo_dir = t["name"], t["geo_dir"]
     client = deps.ssh_connect(t["ssh"])
+    applied = {}
     try:
-        applied = {}
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
@@ -326,9 +346,10 @@ def apply_router(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
             deps.ssh_exec(client, cmd)
+            # Track before verify — see apply_xui note.
+            applied[remote] = gsha
             if deps.remote_sha256(client, tgt) != gsha:
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
-            applied[remote] = gsha
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
         if no_restart:
@@ -345,7 +366,13 @@ def apply_router(t, golden, force, deps, no_restart=False):
         deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
-        return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
+        for remote in applied:
+            try:
+                _restore(client, deps, geo_dir, remote)
+            except Exception:
+                pass
+        suffix = "; rolled back" if applied else ""
+        return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
     finally:
         try: client.close()
         except Exception: pass
