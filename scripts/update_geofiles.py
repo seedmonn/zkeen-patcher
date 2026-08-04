@@ -297,8 +297,9 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
-        # rollback
-        for remote, _ in FILE_MAP:
+        # rollback — only files written this run; restoring untouched files
+        # would clobber them with a stale .bak left over from a prior apply.
+        for remote in applied:
             _restore(client, deps, geo_dir, remote)
         deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         deps.sleep(3)
@@ -338,7 +339,8 @@ def apply_router(t, golden, force, deps, no_restart=False):
         deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
-        for remote, _ in FILE_MAP:
+        # rollback — only files written this run (see apply_xui note).
+        for remote in applied:
             _restore(client, deps, geo_dir, remote)
         deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
