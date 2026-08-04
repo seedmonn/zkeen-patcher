@@ -297,8 +297,9 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
-        # rollback
-        for remote, _ in FILE_MAP:
+        # rollback — only files written this run; restoring untouched files
+        # would clobber them with a stale .bak left over from a prior apply.
+        for remote in applied:
             _restore(client, deps, geo_dir, remote)
         deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         deps.sleep(3)
@@ -338,7 +339,8 @@ def apply_router(t, golden, force, deps, no_restart=False):
         deps.sleep(5)
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
-        for remote, _ in FILE_MAP:
+        # rollback — only files written this run (see apply_xui note).
+        for remote in applied:
             _restore(client, deps, geo_dir, remote)
         deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
@@ -353,13 +355,13 @@ def restart_container(client, name, deps):
     rc, out, err = deps.ssh_exec(client, f"docker restart {shlex.quote(name)}")
     return rc == 0
 
-def apply_mirror(t, golden, deps):
+def apply_mirror(t, golden, deps, mirror_timeout=DEFAULT_MIRROR_TIMEOUT):
     name, mirror = t["name"], t["mirror"]
     client = deps.ssh_connect(t["ssh"])
     try:
         if not restart_container(client, t["container"], deps):
             return {"ok": False, "msg": f"{name}: docker restart {t['container']} failed", "sha": {}}
-        if deps.wait_mirror(mirror, golden, DEFAULT_MIRROR_TIMEOUT):
+        if deps.wait_mirror(mirror, golden, mirror_timeout):
             return {"ok": True, "msg": f"{name}: geo-updater restarted, mirror verified", "sha": {k:v["sha"] for k,v in golden.items()}}
         return {"ok": False, "msg": f"{name}: mirror did not converge to golden SHA", "sha": {}}
     except Exception as e:
@@ -398,6 +400,7 @@ def main(argv=None):
 
     cfg = resolve_config(args.config)
     min_size = cfg.get("min_size", DEFAULT_MIN_SIZE)
+    mirror_timeout = cfg.get("mirror_timeout", DEFAULT_MIRROR_TIMEOUT)
     errors = []
     for t in cfg["targets"]:
         try:
@@ -429,7 +432,7 @@ def main(argv=None):
                 continue
             if t["kind"] == "xui":      r = apply_xui(t, golden, args.force, deps, no_restart=args.no_restart)
             elif t["kind"] == "router": r = apply_router(t, golden, args.force, deps, no_restart=args.no_restart)
-            elif t["kind"] == "docker-updater": r = apply_mirror(t, golden, deps)
+            elif t["kind"] == "docker-updater": r = apply_mirror(t, golden, deps, mirror_timeout=mirror_timeout)
             else: r = {"ok": False, "msg": f"{t['name']}: unknown kind", "sha": {}}
             mark = "✓" if r["ok"] else "✗"
             print(f"{mark} {r['msg']}")

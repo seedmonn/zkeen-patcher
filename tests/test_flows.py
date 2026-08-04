@@ -161,6 +161,23 @@ def test_apply_router_rollback_when_xray_down(tmp_path):
     assert d.box["/opt/etc/xray/dat/ip.dat"] == b"OLD"  # restored
 
 
+def test_apply_xui_rollback_preserves_skipped_file(tmp_path):
+    # Regression: rollback must only restore files written this run. A file
+    # that is already golden (skipped) with a stale .bak on disk must NOT be
+    # clobbered by rollback when the *other* file's update triggers a rollback.
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"}, "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"GOLD_IP")},  # already on box -> skipped
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"GOLD_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {"/d/ip.dat": b"GOLD_IP", "/d/ip.dat.bak": b"ANCIENT_IP", "/d/geo.dat": b"OLD_GEO"}
+    d.xray_alive = False  # force rollback
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False and "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"GOLD_IP"  # skipped file untouched, NOT restored from stale .bak
+
+
 def test_apply_mirror_restart_and_verify():
     sha = ugf.sha256_bytes(b"FRESH")
     t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "ginseng"},
@@ -172,6 +189,21 @@ def test_apply_mirror_restart_and_verify():
     r = ugf.apply_mirror(t, golden, d)
     assert r["ok"], r["msg"]
     assert any("docker restart geo-updater" in c for c, _ in d.exec_log)
+
+
+def test_apply_mirror_honors_mirror_timeout():
+    # Regression: mirror_timeout from config must reach wait_mirror.
+    t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "ginseng"},
+         "container": "geo-updater", "mirror": "http://m:33133"}
+    golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": "a"}, "geosite.dat": {"path": "/g/geosite.dat", "sha": "b"}}
+    seen = {}
+    class MD(FakeDeps):
+        def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None):
+            seen["timeout"] = timeout
+            return True
+    d = MD()
+    ugf.apply_mirror(t, golden, d, mirror_timeout=120)
+    assert seen["timeout"] == 120
 
 
 def test_format_summary_counts():
