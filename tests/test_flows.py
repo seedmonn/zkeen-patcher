@@ -26,25 +26,27 @@ class FakeDeps:
         # simulate apply: tmp path written via upload; mv moves it into box path
         rc, out = 0, ""
         if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
-            # parse "cp -f <tgt> <bak>" (backup creation); [^;\s] avoids trailing ';'
-            mcp = re.search(r"cp -f ([^;\s]+) ([^;\s]+)", cmd)
-            if mcp and mcp.group(1) in self.box:
-                self.box[mcp.group(2)] = self.box[mcp.group(1)]
-            # parse "mv -f <tmp> <target>"
-            m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
-            if m:
-                tmp, tgt = m.group(1), m.group(2)
-                self.box[tgt] = self.uploads.get(tmp, b"")
+            # rollback restore (also wrapped in sh -c / sudo -S so non-root can
+            # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt>"
+            if "[ -f" in cmd:
+                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
+                if m and m.group(1) in self.box:
+                    self.box[m.group(2)] = self.box[m.group(1)]
+            else:
+                # parse "cp -f <tgt> <bak>" (backup creation); [^;\s] avoids trailing ';'
+                mcp = re.search(r"cp -f ([^;\s]+) ([^;\s]+)", cmd)
+                if mcp and mcp.group(1) in self.box:
+                    self.box[mcp.group(2)] = self.box[mcp.group(1)]
+                # parse "mv -f <tmp> <target>"
+                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
+                if m:
+                    tmp, tgt = m.group(1), m.group(2)
+                    self.box[tgt] = self.uploads.get(tmp, b"")
         elif "pgrep" in cmd:
             out = "1234\n" if self.xray_alive else ""
             rc = 0 if self.xray_alive else 1
         elif "xkeen -restart" in cmd:
             rc = self.xkeen_rc
-        elif cmd.startswith("[ -f"):
-            # rollback restore: "[ -f <bak> ] && mv -f <bak> <tgt> || true"
-            m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
-            if m and m.group(1) in self.box:
-                self.box[m.group(2)] = self.box[m.group(1)]
         return rc, out, ""
 
     def restart_xray(self, base, token, post=None): return self.restart_ok
@@ -176,6 +178,57 @@ def test_apply_xui_rollback_preserves_skipped_file(tmp_path):
     r = ugf.apply_xui(t, golden, force=False, deps=d)
     assert r["ok"] is False and "rolled back" in r["msg"]
     assert d.box["/d/ip.dat"] == b"GOLD_IP"  # skipped file untouched, NOT restored from stale .bak
+
+
+def test_apply_xui_nonroot_rollback_uses_sudo(tmp_path):
+    # Regression: apply chowns files to root:root, so non-root rollback must
+    # use sudo -S (with the sudo password on stdin) or mv fails silently.
+    t = {"name": "SPB", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"},
+         "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps(); d.xray_alive = False
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False and "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"
+    assert d.box["/d/geo.dat"] == b"OLD_GEO"
+    restore_cmds = [(c, sd) for c, sd in d.exec_log if "[ -f" in c]
+    assert restore_cmds, "expected restore commands"
+    assert all(c.startswith("sudo -S") for c, _ in restore_cmds)
+    assert all(sd == "PW" for _, sd in restore_cmds)
+
+
+def test_apply_xui_exception_rolls_back_partial(tmp_path):
+    # Regression: if the 2nd file fails after the 1st was written, roll back
+    # the partial apply instead of leaving mismatched geoip/geosite on disk.
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    real_sha = d.remote_sha256
+    calls = {"n": 0}
+
+    def flaky_sha(client, path):
+        # Let apply of ip.dat succeed (upload check + post-write check), then
+        # fail the post-write check for geo.dat.
+        sha = real_sha(client, path)
+        if path == "/d/geo.dat":
+            calls["n"] += 1
+            if calls["n"] >= 1:
+                return "0" * 64  # mismatch vs golden
+        return sha
+
+    d.remote_sha256 = flaky_sha
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "ERROR" in r["msg"] and "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"  # first file restored
+    assert d.box["/d/geo.dat"] == b"OLD_GEO"  # second never committed (or restored)
 
 
 def test_apply_mirror_restart_and_verify():
