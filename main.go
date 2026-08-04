@@ -193,13 +193,18 @@ func patchZkeen(zkeen *router.GeoSiteList) *router.GeoSiteList {
 // ── Step 2: build geosite-matched from zkeenip sections ──
 
 func buildGeositeMatched(zkeenip *router.GeoIPList, dlc *router.GeoSiteList) *router.GeoSiteList {
-	sectionNames := map[string]bool{}
+	// Preserve zkeenip.Entry order (deterministic) rather than ranging over a
+	// map — map iteration order is randomized in Go, which made the collected
+	// domain order (and thus the output .dat bytes) differ on every build.
+	var sectionOrder []string
+	seen := map[string]bool{}
 	fmt.Println("  zkeenip.dat sections:")
 	for _, e := range zkeenip.Entry {
 		name := strings.ToUpper(e.CountryCode)
 		fmt.Printf("    %s (%d CIDRs)\n", e.CountryCode, len(e.Cidr))
-		if !dropSections[name] && name != sectionYouTube {
-			sectionNames[name] = true
+		if !dropSections[name] && name != sectionYouTube && !seen[name] {
+			seen[name] = true
+			sectionOrder = append(sectionOrder, name)
 		}
 	}
 
@@ -212,7 +217,7 @@ func buildGeositeMatched(zkeenip *router.GeoIPList, dlc *router.GeoSiteList) *ro
 	// Find matching sections in dlc.dat
 	fmt.Println("  Matching dlc.dat sections:")
 	var allDomains []*router.Domain
-	for name := range sectionNames {
+	for _, name := range sectionOrder {
 		if section, ok := dlcIdx[name]; ok {
 			fmt.Printf("    ✓ %s (%d domains)\n", name, len(section.Domain))
 			allDomains = append(allDomains, section.Domain...)
