@@ -10,6 +10,7 @@ class FakeDeps:
         self.xray_alive = True
         self.restart_ok = True
         self.xkeen_rc = 0
+        self.apply_rc = 0  # non-zero simulates sudo/mv failure without touching the box
 
     def ssh_connect(self, spec): return "CLIENT"
 
@@ -32,6 +33,9 @@ class FakeDeps:
                 m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
                 if m and m.group(1) in self.box:
                     self.box[m.group(2)] = self.box[m.group(1)]
+            elif self.apply_rc != 0:
+                # Failed apply must not mutate the box (no bak refresh, no mv).
+                return self.apply_rc, "", "sudo: apply failed"
             else:
                 # parse "cp -f <tgt> <bak>" (backup creation); [^;\s] avoids trailing ';'
                 mcp = re.search(r"cp -f ([^;\s]+) ([^;\s]+)", cmd)
@@ -229,6 +233,60 @@ def test_apply_xui_exception_rolls_back_partial(tmp_path):
     assert "ERROR" in r["msg"] and "rolled back" in r["msg"]
     assert d.box["/d/ip.dat"] == b"OLD_IP"  # first file restored
     assert d.box["/d/geo.dat"] == b"OLD_GEO"  # second never committed (or restored)
+
+
+def test_apply_xui_failed_apply_does_not_restore_stale_bak(tmp_path):
+    # Regression: apply ssh_exec rc!=0 (e.g. sudo auth fail) leaves the target
+    # untouched. Must NOT mark it applied and restore from a stale .bak — that
+    # would clobber the still-good live file while reporting "rolled back".
+    t = {"name": "SPB", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"},
+         "geo_dir": "/d", "sudo_password": "WRONG", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {"/d/ip.dat": b"GOOD_IP", "/d/ip.dat.bak": b"ANCIENT_IP",
+             "/d/geo.dat": b"GOOD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
+    d.apply_rc = 1
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "apply" in r["msg"] and "failed" in r["msg"]
+    assert "rolled back" not in r["msg"]  # nothing was applied
+    assert d.box["/d/ip.dat"] == b"GOOD_IP"  # NOT clobbered by ANCIENT_IP
+    assert d.box["/d/geo.dat"] == b"GOOD_GEO"
+    assert not any("[ -f" in c for c, _ in d.exec_log)  # no restore commands
+
+
+def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
+    # First file applies; second apply fails (rc!=0). Roll back only the first;
+    # leave the second's live bytes alone (do not revive its stale .bak).
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {"/d/ip.dat": b"OLD_IP", "/d/geo.dat": b"GOOD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
+    apply_calls = {"n": 0}
+    real_exec = d.ssh_exec
+
+    def flaky_exec(client, cmd, stdin_data=None):
+        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and "[ -f" not in cmd:
+            apply_calls["n"] += 1
+            if apply_calls["n"] >= 2:
+                d.apply_rc = 1
+            else:
+                d.apply_rc = 0
+        return real_exec(client, cmd, stdin_data=stdin_data)
+
+    d.ssh_exec = flaky_exec
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"  # first file restored from bak created this run
+    assert d.box["/d/geo.dat"] == b"GOOD_GEO"  # second untouched — not ANCIENT_GEO
 
 
 def test_apply_mirror_restart_and_verify():

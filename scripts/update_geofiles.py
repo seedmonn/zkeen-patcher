@@ -293,11 +293,19 @@ def apply_xui(t, golden, force, deps, no_restart=False):
             if deps.remote_sha256(client, tmp) != gsha:
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
-            deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
-            # Track before verify: mv already replaced the target, so a failed
-            # SHA check must still roll this file back via .bak.
-            applied[remote] = gsha
-            if deps.remote_sha256(client, tgt) != gsha:
+            rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+            # Only mark applied when golden bytes landed. A failed apply (e.g.
+            # sudo auth) leaves the target untouched but may leave a stale
+            # .bak from a prior run — rolling that back would clobber the
+            # still-good file. If rc==0 yet SHA mismatches, mv likely ran
+            # (refreshing .bak), so track for exception-path restore.
+            if deps.remote_sha256(client, tgt) == gsha:
+                applied[remote] = gsha
+            elif rc != 0:
+                detail = f": {err.strip()[:200]}" if err and err.strip() else ""
+                raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
+            else:
+                applied[remote] = gsha
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
@@ -345,10 +353,15 @@ def apply_router(t, golden, force, deps, no_restart=False):
             if deps.remote_sha256(client, tmp) != gsha:
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
-            deps.ssh_exec(client, cmd)
-            # Track before verify — see apply_xui note.
-            applied[remote] = gsha
-            if deps.remote_sha256(client, tgt) != gsha:
+            rc, _, err = deps.ssh_exec(client, cmd)
+            # Only mark applied when golden bytes landed — see apply_xui note.
+            if deps.remote_sha256(client, tgt) == gsha:
+                applied[remote] = gsha
+            elif rc != 0:
+                detail = f": {err.strip()[:200]}" if err and err.strip() else ""
+                raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
+            else:
+                applied[remote] = gsha
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
