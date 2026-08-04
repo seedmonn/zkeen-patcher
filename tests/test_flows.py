@@ -28,8 +28,10 @@ class FakeDeps:
         rc, out = 0, ""
         if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
             # rollback restore (also wrapped in sh -c / sudo -S so non-root can
-            # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt>"
-            if "[ -f" in cmd:
+            # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt> || true"
+            # Apply also contains `[ -f <tgt> ]` for the bak refresh, so key off
+            # `.bak` as the mv source (and the trailing `|| true`).
+            if ".bak" in cmd and "|| true" in cmd:
                 m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
                 if m and m.group(1) in self.box:
                     self.box[m.group(2)] = self.box[m.group(1)]
@@ -198,7 +200,7 @@ def test_apply_xui_nonroot_rollback_uses_sudo(tmp_path):
     assert r["ok"] is False and "rolled back" in r["msg"]
     assert d.box["/d/ip.dat"] == b"OLD_IP"
     assert d.box["/d/geo.dat"] == b"OLD_GEO"
-    restore_cmds = [(c, sd) for c, sd in d.exec_log if "[ -f" in c]
+    restore_cmds = [(c, sd) for c, sd in d.exec_log if ".bak" in c and "|| true" in c]
     assert restore_cmds, "expected restore commands"
     assert all(c.startswith("sudo -S") for c, _ in restore_cmds)
     assert all(sd == "PW" for _, sd in restore_cmds)
@@ -219,12 +221,12 @@ def test_apply_xui_exception_rolls_back_partial(tmp_path):
 
     def flaky_sha(client, path):
         # Let apply of ip.dat succeed (upload check + post-write check), then
-        # fail the post-write check for geo.dat.
+        # fail only the post-write check for geo.dat (call 1 = pre_sha/skip).
         sha = real_sha(client, path)
         if path == "/d/geo.dat":
             calls["n"] += 1
-            if calls["n"] >= 1:
-                return "0" * 64  # mismatch vs golden
+            if calls["n"] >= 2:
+                return "0" * 64  # mismatch vs golden after mv
         return sha
 
     d.remote_sha256 = flaky_sha
@@ -255,7 +257,47 @@ def test_apply_xui_failed_apply_does_not_restore_stale_bak(tmp_path):
     assert "rolled back" not in r["msg"]  # nothing was applied
     assert d.box["/d/ip.dat"] == b"GOOD_IP"  # NOT clobbered by ANCIENT_IP
     assert d.box["/d/geo.dat"] == b"GOOD_GEO"
-    assert not any("[ -f" in c for c, _ in d.exec_log)  # no restore commands
+    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)  # no restore commands
+
+
+def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
+    # Regression: without set -e, mv can fail while chmod/chown still yield
+    # rc==0 and the live file is unchanged. Must NOT treat that as "applied"
+    # and revive a stale .bak (e.g. disk-full: cp/mv fail, chmod on old ok).
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {"/d/ip.dat": b"GOOD_IP", "/d/ip.dat.bak": b"ANCIENT_IP",
+             "/d/geo.dat": b"GOOD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
+
+    def no_op_apply(client, cmd, stdin_data=None):
+        d.exec_log.append((cmd, stdin_data))
+        if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
+            if ".bak" in cmd and "|| true" in cmd:
+                # restore — should not be reached for this scenario
+                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
+                if m and m.group(1) in d.box:
+                    d.box[m.group(2)] = d.box[m.group(1)]
+                return 0, "", ""
+            # Pretend apply "succeeded" (rc=0) but did not mutate the box —
+            # mirrors chmod/chown succeeding after a failed mv.
+            return 0, "", ""
+        if "pgrep" in cmd:
+            return 0, "1234\n", ""
+        return 0, "", ""
+
+    d.ssh_exec = no_op_apply
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "SHA mismatch" in r["msg"]
+    assert "rolled back" not in r["msg"]
+    assert d.box["/d/ip.dat"] == b"GOOD_IP"  # NOT clobbered by ANCIENT_IP
+    assert d.box["/d/geo.dat"] == b"GOOD_GEO"
+    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)
 
 
 def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
@@ -273,7 +315,7 @@ def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
     real_exec = d.ssh_exec
 
     def flaky_exec(client, cmd, stdin_data=None):
-        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and "[ -f" not in cmd:
+        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and not (".bak" in cmd and "|| true" in cmd):
             apply_calls["n"] += 1
             if apply_calls["n"] >= 2:
                 d.apply_rc = 1

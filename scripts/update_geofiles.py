@@ -92,9 +92,15 @@ def parse_restart_response(text: str) -> bool:
 def build_apply_command(geo_dir, remote_name, tmp_path, user):
     target = f"{geo_dir}/{remote_name}"
     bak = f"{target}.bak"
-    inner = (f"cp -f {shlex.quote(target)} {shlex.quote(bak)} 2>/dev/null || true; "
+    # set -e so mv/chmod/chown failures surface as rc!=0. If the live file
+    # exists, cp MUST refresh .bak before mv — the old "cp || true" allowed
+    # mv to fail while chmod/chown still returned 0, and exception-path
+    # rollback then revived a stale .bak over the untouched live file.
+    inner = (f"set -e; "
+             f"if [ -f {shlex.quote(target)} ]; then cp -f {shlex.quote(target)} {shlex.quote(bak)}; fi; "
              f"mv -f {shlex.quote(tmp_path)} {shlex.quote(target)}; "
-             f"chmod 644 {shlex.quote(target)}; chown root:root {shlex.quote(target)}")
+             f"chmod 644 {shlex.quote(target)}; "
+             f"chown root:root {shlex.quote(target)}")
     if not needs_sudo(user):
         return (f"sh -c {shlex.quote(inner)}", None)
     # sudo -S reads password from stdin (no-op if NOPASSWD); password never hits argv
@@ -286,7 +292,8 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
-            if should_skip_file(deps.remote_sha256(client, tgt), gsha, force):
+            pre_sha = deps.remote_sha256(client, tgt)
+            if should_skip_file(pre_sha, gsha, force):
                 continue
             tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
             deps.ssh_upload(client, golden[rel]["path"], tmp)
@@ -294,18 +301,20 @@ def apply_xui(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
             rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
-            # Only mark applied when golden bytes landed. A failed apply (e.g.
-            # sudo auth) leaves the target untouched but may leave a stale
-            # .bak from a prior run — rolling that back would clobber the
-            # still-good file. If rc==0 yet SHA mismatches, mv likely ran
-            # (refreshing .bak), so track for exception-path restore.
-            if deps.remote_sha256(client, tgt) == gsha:
+            # Only mark applied when golden bytes landed, or when the target
+            # actually changed (corrupt/partial write) so exception-path
+            # restore has a fresh .bak. If the target is unchanged, do NOT
+            # mark applied — a stale .bak from a prior run must not be revived.
+            post_sha = deps.remote_sha256(client, tgt)
+            if post_sha == gsha:
                 applied[remote] = gsha
             elif rc != 0:
                 detail = f": {err.strip()[:200]}" if err and err.strip() else ""
                 raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
-            else:
+            elif pre_sha != post_sha:
                 applied[remote] = gsha
+                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            else:
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
@@ -346,7 +355,8 @@ def apply_router(t, golden, force, deps, no_restart=False):
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
-            if should_skip_file(deps.remote_sha256(client, tgt), gsha, force):
+            pre_sha = deps.remote_sha256(client, tgt)
+            if should_skip_file(pre_sha, gsha, force):
                 continue
             tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
             deps.ssh_upload(client, golden[rel]["path"], tmp)
@@ -354,14 +364,17 @@ def apply_router(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
             rc, _, err = deps.ssh_exec(client, cmd)
-            # Only mark applied when golden bytes landed — see apply_xui note.
-            if deps.remote_sha256(client, tgt) == gsha:
+            # Only mark applied when golden landed or target changed — see apply_xui.
+            post_sha = deps.remote_sha256(client, tgt)
+            if post_sha == gsha:
                 applied[remote] = gsha
             elif rc != 0:
                 detail = f": {err.strip()[:200]}" if err and err.strip() else ""
                 raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
-            else:
+            elif pre_sha != post_sha:
                 applied[remote] = gsha
+                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            else:
                 raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
