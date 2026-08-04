@@ -95,6 +95,18 @@ def test_build_apply_command_seedmon_uses_sudo_S():
     cmd, stdin = ugf.build_apply_command("/d", "ip.dat", "/tmp/x", "seedmon")
     assert cmd.startswith("sudo -S -p ''") and stdin == "PW"
 
+def test_build_restore_command_root_has_no_sudo():
+    cmd, stdin = ugf.build_restore_command("/d", "ip.dat", "root")
+    assert "sudo" not in cmd and stdin is None
+    assert "ip.dat.bak" in cmd and "mv -f" in cmd
+
+def test_build_restore_command_seedmon_uses_sudo_S():
+    # apply chowns targets to root:root; non-root rollback must elevate or it
+    # silently fails (Permission denied) while reporting "rolled back".
+    cmd, stdin = ugf.build_restore_command("/d", "ip.dat", "seedmon")
+    assert cmd.startswith("sudo -S -p ''") and stdin == "PW"
+    assert "ip.dat.bak" in cmd
+
 def test_filter_targets():
     ts = [{"name": "MSK"}, {"name": "SPB"}]
     assert [t["name"] for t in ugf.filter_targets(ts, None)] == ["MSK", "SPB"]
