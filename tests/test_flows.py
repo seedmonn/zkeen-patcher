@@ -331,6 +331,67 @@ def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
     assert d.box["/d/geo.dat"] == b"GOOD_GEO"  # second untouched — not ANCIENT_GEO
 
 
+def test_apply_xui_connect_failure_returns_error_not_raise():
+    # Regression: ssh_connect used to sit outside try/except, so one down
+    # host aborted the whole multi-target run. Must return ok=False instead.
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": "a"},
+              "geosite.dat": {"path": "/g/geosite.dat", "sha": "b"}}
+
+    class Boom(FakeDeps):
+        def ssh_connect(self, spec):
+            raise ConnectionError("host unreachable")
+
+    r = ugf.apply_xui(t, golden, force=False, deps=Boom())
+    assert r["ok"] is False
+    assert "host unreachable" in r["msg"]
+    assert "rolled back" not in r["msg"]
+
+
+def test_apply_mirror_connect_failure_returns_error_not_raise():
+    t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "u"},
+         "container": "geo-updater", "mirror": "http://m:33133"}
+    golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": "a"},
+              "geosite.dat": {"path": "/g/geosite.dat", "sha": "b"}}
+
+    class Boom(FakeDeps):
+        def ssh_connect(self, spec):
+            raise ConnectionError("handshake EOF")
+
+    r = ugf.apply_mirror(t, golden, Boom())
+    assert r["ok"] is False
+    assert "handshake EOF" in r["msg"]
+
+
+def test_apply_xui_ssh_drop_after_write_still_rolls_back(tmp_path):
+    # Regression: apply mv succeeds (rc==0) but post-write remote_sha256 raises
+    # (Keenetic dropbear). Must already be in applied[] so exception-path
+    # restore runs — otherwise new ip.dat + old geo.dat stay mismatched.
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    real_sha = d.remote_sha256
+
+    def flaky_sha(client, path):
+        sha = real_sha(client, path)
+        # After apply moved NEW_IP into place, fail the post-write check.
+        if path == "/d/ip.dat" and d.box.get(path) == b"NEW_IP":
+            raise ConnectionError("SSH drop during post-write sha")
+        return sha
+
+    d.remote_sha256 = flaky_sha
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "ERROR" in r["msg"] and "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"
+    assert d.box["/d/geo.dat"] == b"OLD_GEO"
+
+
 def test_apply_mirror_restart_and_verify():
     sha = ugf.sha256_bytes(b"FRESH")
     t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "ginseng"},

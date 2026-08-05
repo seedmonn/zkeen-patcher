@@ -283,12 +283,38 @@ def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None):
     cmd, stdin = build_restore_command(geo_dir, remote_name, user)
     deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
 
+def _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err):
+    """Update applied[] after an apply attempt; raise UpdateError on failure.
+
+    Under set -e, rc==0 means bak was refreshed (if live existed) and mv
+    completed — mark applied *before* callers rely on a follow-up SSH round
+    trip, so a drop during post-write SHA still rolls back. If rc==0 yet the
+    target is unchanged and not golden, un-mark so a stale .bak is not revived.
+    """
+    if rc == 0:
+        applied[remote] = gsha
+    if post_sha == gsha:
+        applied[remote] = gsha
+        return
+    if pre_sha != post_sha:
+        applied[remote] = gsha
+        raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+    if rc != 0:
+        detail = f": {err.strip()[:200]}" if err and err.strip() else ""
+        raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
+    # rc==0 claimed success but bytes unchanged and not golden — do not
+    # restore from a possibly-stale .bak.
+    applied.pop(remote, None)
+    raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+
 def apply_xui(t, golden, force, deps, no_restart=False):
     name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
     sudo_pw = t.get("sudo_password")
-    client = deps.ssh_connect(t["ssh"])
     applied = {}
+    client = None
     try:
+        # Connect inside try: a down host must not abort the multi-target run.
+        client = deps.ssh_connect(t["ssh"])
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
@@ -301,21 +327,12 @@ def apply_xui(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
             rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
-            # Only mark applied when golden bytes landed, or when the target
-            # actually changed (corrupt/partial write) so exception-path
-            # restore has a fresh .bak. If the target is unchanged, do NOT
-            # mark applied — a stale .bak from a prior run must not be revived.
+            # Mark on rc==0 *before* post-sha so an SSH drop during verify
+            # still rolls back (bak is fresh under set -e).
+            if rc == 0:
+                applied[remote] = gsha
             post_sha = deps.remote_sha256(client, tgt)
-            if post_sha == gsha:
-                applied[remote] = gsha
-            elif rc != 0:
-                detail = f": {err.strip()[:200]}" if err and err.strip() else ""
-                raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
-            elif pre_sha != post_sha:
-                applied[remote] = gsha
-                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
-            else:
-                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
         if no_restart:
@@ -336,22 +353,25 @@ def apply_xui(t, golden, force, deps, no_restart=False):
     except Exception as e:
         # Mid-apply failure (SHA mismatch, SSH drop, …) must not leave a
         # partial update on disk — roll back whatever this run already wrote.
-        for remote in applied:
-            try:
-                _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
-            except Exception:
-                pass
+        if client is not None:
+            for remote in applied:
+                try:
+                    _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
+                except Exception:
+                    pass
         suffix = "; rolled back" if applied else ""
         return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
     finally:
-        try: client.close()
-        except Exception: pass
+        if client is not None:
+            try: client.close()
+            except Exception: pass
 
 def apply_router(t, golden, force, deps, no_restart=False):
     name, geo_dir = t["name"], t["geo_dir"]
-    client = deps.ssh_connect(t["ssh"])
     applied = {}
+    client = None
     try:
+        client = deps.ssh_connect(t["ssh"])
         for remote, rel in FILE_MAP:
             tgt = f"{geo_dir}/{remote}"
             gsha = golden[rel]["sha"]
@@ -364,18 +384,10 @@ def apply_router(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
             rc, _, err = deps.ssh_exec(client, cmd)
-            # Only mark applied when golden landed or target changed — see apply_xui.
+            if rc == 0:
+                applied[remote] = gsha
             post_sha = deps.remote_sha256(client, tgt)
-            if post_sha == gsha:
-                applied[remote] = gsha
-            elif rc != 0:
-                detail = f": {err.strip()[:200]}" if err and err.strip() else ""
-                raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
-            elif pre_sha != post_sha:
-                applied[remote] = gsha
-                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
-            else:
-                raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
         if no_restart:
@@ -392,16 +404,18 @@ def apply_router(t, golden, force, deps, no_restart=False):
         deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
-        for remote in applied:
-            try:
-                _restore(client, deps, geo_dir, remote)
-            except Exception:
-                pass
+        if client is not None:
+            for remote in applied:
+                try:
+                    _restore(client, deps, geo_dir, remote)
+                except Exception:
+                    pass
         suffix = "; rolled back" if applied else ""
         return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
     finally:
-        try: client.close()
-        except Exception: pass
+        if client is not None:
+            try: client.close()
+            except Exception: pass
 
 
 def restart_container(client, name, deps):
@@ -410,8 +424,9 @@ def restart_container(client, name, deps):
 
 def apply_mirror(t, golden, deps, mirror_timeout=DEFAULT_MIRROR_TIMEOUT):
     name, mirror = t["name"], t["mirror"]
-    client = deps.ssh_connect(t["ssh"])
+    client = None
     try:
+        client = deps.ssh_connect(t["ssh"])
         if not restart_container(client, t["container"], deps):
             return {"ok": False, "msg": f"{name}: docker restart {t['container']} failed", "sha": {}}
         if deps.wait_mirror(mirror, golden, mirror_timeout):
@@ -420,8 +435,9 @@ def apply_mirror(t, golden, deps, mirror_timeout=DEFAULT_MIRROR_TIMEOUT):
     except Exception as e:
         return {"ok": False, "msg": f"{name}: ERROR {e}", "sha": {}}
     finally:
-        try: client.close()
-        except Exception: pass
+        if client is not None:
+            try: client.close()
+            except Exception: pass
 
 
 def render_plan(targets, golden):
