@@ -29,21 +29,20 @@ class FakeDeps:
         if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
             # rollback restore (also wrapped in sh -c / sudo -S so non-root can
             # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt> || true"
-            # Apply also contains `[ -f <tgt> ]` for the bak refresh, so key off
-            # `.bak` as the mv source (and the trailing `|| true`).
+            # Backup also mentions `.bak` (cp live→bak), so key restore off `|| true`.
             if ".bak" in cmd and "|| true" in cmd:
                 m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
                 if m and m.group(1) in self.box:
                     self.box[m.group(2)] = self.box[m.group(1)]
-            elif self.apply_rc != 0:
-                # Failed apply must not mutate the box (no bak refresh, no mv).
+            elif "mv -f" in cmd and self.apply_rc != 0:
+                # Failed commit must not mutate the box. Backup (cp-only) still runs.
                 return self.apply_rc, "", "sudo: apply failed"
             else:
-                # parse "cp -f <tgt> <bak>" (backup creation); [^;\s] avoids trailing ';'
+                # backup: "cp -f <tgt> <bak>"; commit: "mv -f <tmp> <target>"
+                # [^;\s] avoids trailing ';' from set -e payloads.
                 mcp = re.search(r"cp -f ([^;\s]+) ([^;\s]+)", cmd)
                 if mcp and mcp.group(1) in self.box:
                     self.box[mcp.group(2)] = self.box[mcp.group(1)]
-                # parse "mv -f <tmp> <target>"
                 m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
                 if m:
                     tmp, tgt = m.group(1), m.group(2)
@@ -301,7 +300,7 @@ def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
 
 
 def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
-    # First file applies; second apply fails (rc!=0). Roll back only the first;
+    # First file applies; second commit fails (rc!=0). Roll back only the first;
     # leave the second's live bytes alone (do not revive its stale .bak).
     t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
          "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
@@ -311,16 +310,16 @@ def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
         (tmp_path / rel).write_bytes(b)
     d = FakeDeps()
     d.box = {"/d/ip.dat": b"OLD_IP", "/d/geo.dat": b"GOOD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
-    apply_calls = {"n": 0}
     real_exec = d.ssh_exec
 
     def flaky_exec(client, cmd, stdin_data=None):
-        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and not (".bak" in cmd and "|| true" in cmd):
-            apply_calls["n"] += 1
-            if apply_calls["n"] >= 2:
-                d.apply_rc = 1
-            else:
-                d.apply_rc = 0
+        # Fail only the geo.dat *commit* (mv), after its bak refresh succeeded.
+        is_shell = cmd.startswith("sudo -S") or cmd.startswith("sh -c")
+        is_restore = ".bak" in cmd and "|| true" in cmd
+        if is_shell and not is_restore and "geo.dat" in cmd and "mv -f" in cmd:
+            d.apply_rc = 1
+        else:
+            d.apply_rc = 0
         return real_exec(client, cmd, stdin_data=stdin_data)
 
     d.ssh_exec = flaky_exec
@@ -385,6 +384,38 @@ def test_apply_xui_ssh_drop_after_write_still_rolls_back(tmp_path):
         return sha
 
     d.remote_sha256 = flaky_sha
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "ERROR" in r["msg"] and "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"
+    assert d.box["/d/geo.dat"] == b"OLD_GEO"
+
+
+def test_apply_xui_ssh_drop_during_commit_still_rolls_back(tmp_path):
+    # Regression: bak refresh succeeds, then SSH drops during commit mv / before
+    # exit status is delivered (Keenetic dropbear). Remote may already have
+    # swapped bytes; must be in applied[] so exception-path restore runs.
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    real_exec = d.ssh_exec
+
+    def flaky_exec(client, cmd, stdin_data=None):
+        is_shell = cmd.startswith("sudo -S") or cmd.startswith("sh -c")
+        is_restore = ".bak" in cmd and "|| true" in cmd
+        # Drop on first commit (ip.dat mv), after bak was refreshed.
+        if is_shell and not is_restore and "ip.dat" in cmd and "mv -f" in cmd:
+            # Perform the remote mv, then drop — mirrors "command finished,
+            # channel died before exit status".
+            real_exec(client, cmd, stdin_data=stdin_data)
+            raise ConnectionError("SSH drop during commit exit status")
+        return real_exec(client, cmd, stdin_data=stdin_data)
+
+    d.ssh_exec = flaky_exec
     r = ugf.apply_xui(t, golden, force=False, deps=d)
     assert r["ok"] is False
     assert "ERROR" in r["msg"] and "rolled back" in r["msg"]

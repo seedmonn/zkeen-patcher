@@ -100,6 +100,26 @@ def test_build_apply_command_seedmon_uses_sudo_S():
     assert cmd.startswith("sudo -S -p ''") and stdin == "PW"
     assert "set -e" in cmd and "|| true" not in cmd
 
+def test_build_backup_command_refreshes_bak_only():
+    cmd, stdin = ugf.build_backup_command("/d", "ip.dat", "root")
+    assert "sudo" not in cmd and stdin is None
+    assert "cp -f /d/ip.dat /d/ip.dat.bak" in cmd
+    assert "mv -f" not in cmd
+    assert "set -e" in cmd and "|| true" not in cmd
+
+def test_build_commit_command_moves_without_bak():
+    cmd, stdin = ugf.build_commit_command("/d", "ip.dat", "/tmp/x", "root")
+    assert "sudo" not in cmd and stdin is None
+    assert "mv -f /tmp/x /d/ip.dat" in cmd
+    assert ".bak" not in cmd
+    assert "set -e" in cmd
+
+def test_build_backup_and_commit_seedmon_use_sudo_S():
+    bcmd, bstdin = ugf.build_backup_command("/d", "ip.dat", "seedmon")
+    ccmd, cstdin = ugf.build_commit_command("/d", "ip.dat", "/tmp/x", "seedmon")
+    assert bcmd.startswith("sudo -S -p ''") and bstdin == "PW"
+    assert ccmd.startswith("sudo -S -p ''") and cstdin == "PW"
+
 def test_build_restore_command_root_has_no_sudo():
     cmd, stdin = ugf.build_restore_command("/d", "ip.dat", "root")
     assert "sudo" not in cmd and stdin is None

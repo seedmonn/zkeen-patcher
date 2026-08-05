@@ -89,22 +89,48 @@ def parse_restart_response(text: str) -> bool:
     except Exception:
         return False
 
-def build_apply_command(geo_dir, remote_name, tmp_path, user):
+def _sudo_wrap(inner, user):
+    """Wrap an sh -c payload with sudo -S when the SSH user is non-root."""
+    if not needs_sudo(user):
+        return (f"sh -c {shlex.quote(inner)}", None)
+    # sudo -S reads password from stdin (no-op if NOPASSWD); password never hits argv
+    return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
+
+def build_backup_command(geo_dir, remote_name, user):
+    """Refresh .bak from the live target if it exists.
+
+    Must run as its own SSH round-trip *before* commit: Keenetic dropbear often
+    drops the channel after a remote command finishes but before exit status is
+    delivered. With bak already fresh we can mark applied and roll back safely
+    if that drop happens during/after mv.
+    """
     target = f"{geo_dir}/{remote_name}"
     bak = f"{target}.bak"
-    # set -e so mv/chmod/chown failures surface as rc!=0. If the live file
-    # exists, cp MUST refresh .bak before mv — the old "cp || true" allowed
-    # mv to fail while chmod/chown still returned 0, and exception-path
-    # rollback then revived a stale .bak over the untouched live file.
+    # set -e: a failed cp must not be treated as a fresh bak.
+    inner = (f"set -e; "
+             f"if [ -f {shlex.quote(target)} ]; then cp -f {shlex.quote(target)} {shlex.quote(bak)}; fi")
+    return _sudo_wrap(inner, user)
+
+def build_commit_command(geo_dir, remote_name, tmp_path, user):
+    """mv tmp into place + chmod/chown. Caller must have refreshed .bak first."""
+    target = f"{geo_dir}/{remote_name}"
+    # set -e so mv/chmod/chown failures surface as rc!=0.
+    inner = (f"set -e; "
+             f"mv -f {shlex.quote(tmp_path)} {shlex.quote(target)}; "
+             f"chmod 644 {shlex.quote(target)}; "
+             f"chown root:root {shlex.quote(target)}")
+    return _sudo_wrap(inner, user)
+
+def build_apply_command(geo_dir, remote_name, tmp_path, user):
+    """Combined backup+commit (tests / introspection). Prefer the split helpers at apply time."""
+    target = f"{geo_dir}/{remote_name}"
+    bak = f"{target}.bak"
     inner = (f"set -e; "
              f"if [ -f {shlex.quote(target)} ]; then cp -f {shlex.quote(target)} {shlex.quote(bak)}; fi; "
              f"mv -f {shlex.quote(tmp_path)} {shlex.quote(target)}; "
              f"chmod 644 {shlex.quote(target)}; "
              f"chown root:root {shlex.quote(target)}")
-    if not needs_sudo(user):
-        return (f"sh -c {shlex.quote(inner)}", None)
-    # sudo -S reads password from stdin (no-op if NOPASSWD); password never hits argv
-    return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
+    return _sudo_wrap(inner, user)
 
 def build_restore_command(geo_dir, remote_name, user):
     """Restore geo_dir/remote_name from its .bak. Must use sudo for non-root:
@@ -286,26 +312,48 @@ def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None):
 def _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err):
     """Update applied[] after an apply attempt; raise UpdateError on failure.
 
-    Under set -e, rc==0 means bak was refreshed (if live existed) and mv
-    completed — mark applied *before* callers rely on a follow-up SSH round
-    trip, so a drop during post-write SHA still rolls back. If rc==0 yet the
-    target is unchanged and not golden, un-mark so a stale .bak is not revived.
+    Callers mark applied *after* a successful bak refresh and *before* commit,
+    so an SSH drop during mv still rolls back from a fresh .bak. If commit
+    claims rc==0 yet the target is unchanged and not golden, un-mark so a
+    stale .bak is not revived. Same un-mark when rc!=0 and bytes unchanged.
     """
-    if rc == 0:
-        applied[remote] = gsha
     if post_sha == gsha:
         applied[remote] = gsha
         return
     if pre_sha != post_sha:
         applied[remote] = gsha
         raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+    # Target unchanged — do not restore (bak may be stale, or equals live).
+    applied.pop(remote, None)
     if rc != 0:
         detail = f": {err.strip()[:200]}" if err and err.strip() else ""
         raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
-    # rc==0 claimed success but bytes unchanged and not golden — do not
-    # restore from a possibly-stale .bak.
-    applied.pop(remote, None)
     raise UpdateError(f"{name}: post-write {remote} SHA mismatch")
+
+def _apply_one_file(client, deps, name, geo_dir, remote, rel, golden, force, user, sudo_pw, applied):
+    """Upload + backup + commit one geo file. Mutates applied[]. Raises UpdateError."""
+    tgt = f"{geo_dir}/{remote}"
+    gsha = golden[rel]["sha"]
+    pre_sha = deps.remote_sha256(client, tgt)
+    if should_skip_file(pre_sha, gsha, force):
+        return
+    tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
+    deps.ssh_upload(client, golden[rel]["path"], tmp)
+    if deps.remote_sha256(client, tmp) != gsha:
+        raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
+    # Refresh bak first so we can mark applied before the mutating mv.
+    bak_cmd, bak_stdin = build_backup_command(geo_dir, remote, user)
+    brc, _, berr = deps.ssh_exec(client, bak_cmd, stdin_data=(sudo_pw if bak_stdin else None))
+    if brc != 0:
+        detail = f": {berr.strip()[:200]}" if berr and berr.strip() else ""
+        raise UpdateError(f"{name}: backup {remote} failed (rc={brc}){detail}")
+    # Bak is fresh (or no prior live file). Mark before commit so a drop during
+    # mv / exit-status still rolls back (avoids mismatched ip.dat/geo.dat).
+    applied[remote] = gsha
+    cmd, stdin = build_commit_command(geo_dir, remote, tmp, user)
+    rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+    post_sha = deps.remote_sha256(client, tgt)
+    _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
 
 def apply_xui(t, golden, force, deps, no_restart=False):
     name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
@@ -316,23 +364,8 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         # Connect inside try: a down host must not abort the multi-target run.
         client = deps.ssh_connect(t["ssh"])
         for remote, rel in FILE_MAP:
-            tgt = f"{geo_dir}/{remote}"
-            gsha = golden[rel]["sha"]
-            pre_sha = deps.remote_sha256(client, tgt)
-            if should_skip_file(pre_sha, gsha, force):
-                continue
-            tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
-            deps.ssh_upload(client, golden[rel]["path"], tmp)
-            if deps.remote_sha256(client, tmp) != gsha:
-                raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
-            cmd, stdin = build_apply_command(geo_dir, remote, tmp, user)
-            rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
-            # Mark on rc==0 *before* post-sha so an SSH drop during verify
-            # still rolls back (bak is fresh under set -e).
-            if rc == 0:
-                applied[remote] = gsha
-            post_sha = deps.remote_sha256(client, tgt)
-            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            _apply_one_file(client, deps, name, geo_dir, remote, rel, golden, force,
+                            user, sudo_pw, applied)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
         if no_restart:
@@ -373,21 +406,8 @@ def apply_router(t, golden, force, deps, no_restart=False):
     try:
         client = deps.ssh_connect(t["ssh"])
         for remote, rel in FILE_MAP:
-            tgt = f"{geo_dir}/{remote}"
-            gsha = golden[rel]["sha"]
-            pre_sha = deps.remote_sha256(client, tgt)
-            if should_skip_file(pre_sha, gsha, force):
-                continue
-            tmp = f"/tmp/.zkeen.{remote}.{os.getpid()}"
-            deps.ssh_upload(client, golden[rel]["path"], tmp)
-            if deps.remote_sha256(client, tmp) != gsha:
-                raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
-            cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
-            rc, _, err = deps.ssh_exec(client, cmd)
-            if rc == 0:
-                applied[remote] = gsha
-            post_sha = deps.remote_sha256(client, tgt)
-            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            _apply_one_file(client, deps, name, geo_dir, remote, rel, golden, force,
+                            "root", None, applied)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
         if no_restart:
@@ -416,7 +436,6 @@ def apply_router(t, golden, force, deps, no_restart=False):
         if client is not None:
             try: client.close()
             except Exception: pass
-
 
 def restart_container(client, name, deps):
     rc, out, err = deps.ssh_exec(client, f"docker restart {shlex.quote(name)}")
