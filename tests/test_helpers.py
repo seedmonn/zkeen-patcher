@@ -90,10 +90,15 @@ def test_build_apply_command_root_has_no_sudo():
     cmd, stdin = ugf.build_apply_command("/d", "ip.dat", "/tmp/x", "root")
     assert "sudo" not in cmd and stdin is None
     assert "mv -f /tmp/x /d/ip.dat" in cmd and ".bak" in cmd
+    assert "set -e" in cmd
+    # Live file must be backed up before mv; failure must not be swallowed.
+    assert "|| true" not in cmd
+    assert "if [ -f /d/ip.dat ]" in cmd
 
 def test_build_apply_command_seedmon_uses_sudo_S():
     cmd, stdin = ugf.build_apply_command("/d", "ip.dat", "/tmp/x", "seedmon")
     assert cmd.startswith("sudo -S -p ''") and stdin == "PW"
+    assert "set -e" in cmd and "|| true" not in cmd
 
 def test_build_restore_command_root_has_no_sudo():
     cmd, stdin = ugf.build_restore_command("/d", "ip.dat", "root")
