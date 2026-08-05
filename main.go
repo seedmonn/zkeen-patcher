@@ -16,10 +16,11 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "<DOMAIN>"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai"}
 
-// Single hosts/CIDRs appended to the IP section (bare IP → /32).
-var extraIPs = []string{"<IP>", "<IP>", "<IP>"}
+// Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
+// hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
+var extraIPs = []string{}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
@@ -58,7 +59,23 @@ func main() {
 	ehentaiName := flag.String("inject", "", "Comma-separated dlc.dat section names to inject into DOMAINS (overrides defaults)")
 	geminiName := flag.String("gemini", "", "Comma-separated dlc.dat section names to route into GEMINI (overrides defaults)")
 	outputDir := flag.String("out", ".", "Output directory")
+	extraIPsArg := flag.String("extra-ips", "", "Comma-separated bare IPs/CIDRs to append to the IP section (personal infra — supply via secret, not in source)")
+	extraDomainsArg := flag.String("extra-domains", "", "Comma-separated extra domains to inject into DOMAINS (personal — supply via secret, not in source)")
 	flag.Parse()
+	if *extraIPsArg != "" {
+		for _, s := range strings.Split(*extraIPsArg, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				extraIPs = append(extraIPs, s)
+			}
+		}
+	}
+	if *extraDomainsArg != "" {
+		for _, s := range strings.Split(*extraDomainsArg, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				extraDomains = append(extraDomains, s)
+			}
+		}
+	}
 
 	// ── Load sources ──
 	fmt.Println("=== Loading sources ===")
@@ -304,7 +321,9 @@ func injectExtra(merged *router.GeoSiteList, dlc *router.GeoSiteList, sectionNam
 			Type:  router.Domain_RootDomain,
 			Value: d,
 		})
-		fmt.Printf("  Added: %s\n", d)
+	}
+	if len(extras) > 0 {
+		fmt.Printf("  Added: %d extra domain(s)\n", len(extras))
 	}
 
 	for _, e := range merged.Entry {
@@ -388,7 +407,9 @@ func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 
 	for _, ipStr := range extraIPs {
 		ip.Cidr = append(ip.Cidr, ipToCIDR(ipStr))
-		fmt.Printf("  Added: %s\n", ipStr)
+	}
+	if len(extraIPs) > 0 {
+		fmt.Printf("  Added: %d extra IP(s)\n", len(extraIPs))
 	}
 
 	ip.Cidr = dedupCIDRs(ip.Cidr)

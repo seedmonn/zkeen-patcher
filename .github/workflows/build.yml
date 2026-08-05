@@ -21,9 +21,12 @@ jobs:
           go-version: '1.24'
 
       - name: Build .dat files
+        env:
+          EXTRA_IPS: ${{ secrets.EXTRA_IPS }}
+          EXTRA_DOMAINS: ${{ secrets.EXTRA_DOMAINS }}
         run: |
           mkdir -p output
-          go run . -out ./output
+          go run . -out ./output ${EXTRA_IPS:+--extra-ips "$EXTRA_IPS"} ${EXTRA_DOMAINS:+--extra-domains "$EXTRA_DOMAINS"}
 
       - name: Rename for release
         run: |
