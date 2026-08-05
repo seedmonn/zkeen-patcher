@@ -453,19 +453,37 @@ func dedupCIDRs(cidrs []*router.CIDR) []*router.CIDR {
 }
 
 // ipToCIDR turns a bare IP ("1.2.3.4" → /32) or "ip/prefix" string into a router CIDR.
+// IPv4 only — zkeenip-patched/geoip output drops IPv6, and an empty To4() IP would
+// make v2ray GeoIPMatcher.Init fail ("invalid IP address") on every consumer.
 func ipToCIDR(s string) *router.CIDR {
+	c, err := parseExtraIP(s)
+	check(err, "parse extra IP "+s)
+	return c
+}
+
+func parseExtraIP(s string) (*router.CIDR, error) {
 	s = strings.TrimSpace(s)
 	if strings.Contains(s, "/") {
 		_, ipnet, err := net.ParseCIDR(s)
-		check(err, "parse CIDR "+s)
-		prefix, _ := ipnet.Mask.Size()
-		return &router.CIDR{Ip: ipnet.IP.To4(), Prefix: uint32(prefix)}
+		if err != nil {
+			return nil, err
+		}
+		ip4 := ipnet.IP.To4()
+		prefix, bits := ipnet.Mask.Size()
+		if ip4 == nil || bits != 32 {
+			return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only): %s", s)
+		}
+		return &router.CIDR{Ip: ip4, Prefix: uint32(prefix)}, nil
 	}
 	ip := net.ParseIP(s)
 	if ip == nil {
-		check(fmt.Errorf("invalid IP: %s", s), "parse IP "+s)
+		return nil, fmt.Errorf("invalid IP: %s", s)
 	}
-	return &router.CIDR{Ip: ip.To4(), Prefix: 32}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only): %s", s)
+	}
+	return &router.CIDR{Ip: ip4, Prefix: 32}, nil
 }
 
 func overlapCount(a, b []*router.Domain) int {
