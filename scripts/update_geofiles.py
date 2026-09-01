@@ -109,10 +109,16 @@ def build_apply_command(geo_dir, remote_name, tmp_path, user):
 def build_restore_command(geo_dir, remote_name, user):
     """Restore geo_dir/remote_name from its .bak. Must use sudo for non-root:
     apply chowns targets to root:root, so a plain mv as the SSH user fails
-    silently and leaves the bad file in place while reporting 'rolled back'."""
+    silently and leaves the bad file in place while reporting 'rolled back'.
+
+    Do NOT append `|| true`: a missing .bak or failed mv must surface as rc!=0
+    so callers can report restore failure instead of a false 'rolled back'.
+    """
     bak = f"{geo_dir}/{remote_name}.bak"
     tgt = f"{geo_dir}/{remote_name}"
-    inner = f"[ -f {shlex.quote(bak)} ] && mv -f {shlex.quote(bak)} {shlex.quote(tgt)} || true"
+    # set -e: missing bak or mv failure → non-zero (no silent no-op).
+    inner = (f"set -e; test -f {shlex.quote(bak)}; "
+             f"mv -f {shlex.quote(bak)} {shlex.quote(tgt)}")
     if not needs_sudo(user):
         return (f"sh -c {shlex.quote(inner)}", None)
     return (f"sudo -S -p '' sh -c {shlex.quote(inner)}", "PW")
@@ -279,9 +285,38 @@ def _post_check_xray(deps, client):
     rc, out, _ = deps.ssh_exec(client, "pgrep -f '[x]ray'")
     return out.strip() != ""
 
-def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None):
+def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None, expect_sha=None):
+    """Restore remote_name from .bak; raise UpdateError if restore did not land.
+
+    expect_sha is the pre-apply SHA of the live file (or None if it did not
+    exist). When set, the post-restore SHA must match — otherwise we would
+    report success after a no-op or wrong restore.
+    """
     cmd, stdin = build_restore_command(geo_dir, remote_name, user)
-    deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+    rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
+    if rc != 0:
+        detail = f": {err.strip()[:200]}" if err and err.strip() else ""
+        raise UpdateError(f"restore {remote_name} failed (rc={rc}){detail}")
+    if expect_sha is not None:
+        post = deps.remote_sha256(client, f"{geo_dir}/{remote_name}")
+        if post != expect_sha:
+            raise UpdateError(
+                f"restore {remote_name} SHA mismatch "
+                f"(want {expect_sha[:12]}… got {(post or 'missing')[:12]}…)"
+            )
+
+def _rollback_applied(client, deps, geo_dir, applied, pre_shas, user="root", sudo_pw=None):
+    """Restore every file in applied[]; return (all_ok, status_phrase)."""
+    failed = []
+    for remote in applied:
+        try:
+            _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw,
+                     expect_sha=pre_shas.get(remote))
+        except Exception as e:
+            failed.append(f"{remote}: {e}")
+    if failed:
+        return False, "restore FAILED (" + "; ".join(failed) + ")"
+    return True, "rolled back"
 
 def _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err):
     """Update applied[] after an apply attempt; raise UpdateError on failure.
@@ -311,6 +346,7 @@ def apply_xui(t, golden, force, deps, no_restart=False):
     name, geo_dir, user = t["name"], t["geo_dir"], t["ssh"]["user"]
     sudo_pw = t.get("sudo_password")
     applied = {}
+    pre_shas = {}
     client = None
     try:
         # Connect inside try: a down host must not abort the multi-target run.
@@ -329,10 +365,16 @@ def apply_xui(t, golden, force, deps, no_restart=False):
             rc, _, err = deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
             # Mark on rc==0 *before* post-sha so an SSH drop during verify
             # still rolls back (bak is fresh under set -e).
+            pre_shas[remote] = pre_sha
             if rc == 0:
                 applied[remote] = gsha
             post_sha = deps.remote_sha256(client, tgt)
-            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            try:
+                _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            finally:
+                # Keep pre_shas aligned with applied (incl. un-mark path).
+                if remote not in applied:
+                    pre_shas.pop(remote, None)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date (sha match)", "sha": {}}
         if no_restart:
@@ -345,22 +387,20 @@ def apply_xui(t, golden, force, deps, no_restart=False):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
         # rollback — only files written this run; restoring untouched files
         # would clobber them with a stale .bak left over from a prior apply.
-        for remote in applied:
-            _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
+        _, status = _rollback_applied(
+            client, deps, geo_dir, applied, pre_shas, user=user, sudo_pw=sudo_pw)
         deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         deps.sleep(3)
-        return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
+        return {"ok": False, "msg": f"{name}: xray down after update; {status}", "sha": applied}
     except Exception as e:
         # Mid-apply failure (SHA mismatch, SSH drop, …) must not leave a
         # partial update on disk — roll back whatever this run already wrote.
-        if client is not None:
-            for remote in applied:
-                try:
-                    _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
-                except Exception:
-                    pass
-        suffix = "; rolled back" if applied else ""
-        return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
+        status = ""
+        if client is not None and applied:
+            _, status = _rollback_applied(
+                client, deps, geo_dir, applied, pre_shas, user=user, sudo_pw=sudo_pw)
+            status = f"; {status}"
+        return {"ok": False, "msg": f"{name}: ERROR {e}{status}", "sha": {}}
     finally:
         if client is not None:
             try: client.close()
@@ -369,6 +409,7 @@ def apply_xui(t, golden, force, deps, no_restart=False):
 def apply_router(t, golden, force, deps, no_restart=False):
     name, geo_dir = t["name"], t["geo_dir"]
     applied = {}
+    pre_shas = {}
     client = None
     try:
         client = deps.ssh_connect(t["ssh"])
@@ -384,10 +425,15 @@ def apply_router(t, golden, force, deps, no_restart=False):
                 raise UpdateError(f"{name}: uploaded {remote} SHA mismatch")
             cmd, _ = build_apply_command(geo_dir, remote, tmp, "root")  # root → no sudo
             rc, _, err = deps.ssh_exec(client, cmd)
+            pre_shas[remote] = pre_sha
             if rc == 0:
                 applied[remote] = gsha
             post_sha = deps.remote_sha256(client, tgt)
-            _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            try:
+                _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err)
+            finally:
+                if remote not in applied:
+                    pre_shas.pop(remote, None)
         if not applied:
             return {"ok": True, "msg": f"{name}: up to date", "sha": {}}
         if no_restart:
@@ -399,19 +445,15 @@ def apply_router(t, golden, force, deps, no_restart=False):
         if _post_check_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
         # rollback — only files written this run (see apply_xui note).
-        for remote in applied:
-            _restore(client, deps, geo_dir, remote)
+        _, status = _rollback_applied(client, deps, geo_dir, applied, pre_shas)
         deps.ssh_exec(client, "xkeen -restart"); deps.sleep(3)
-        return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
+        return {"ok": False, "msg": f"{name}: xray down after update; {status}", "sha": applied}
     except Exception as e:
-        if client is not None:
-            for remote in applied:
-                try:
-                    _restore(client, deps, geo_dir, remote)
-                except Exception:
-                    pass
-        suffix = "; rolled back" if applied else ""
-        return {"ok": False, "msg": f"{name}: ERROR {e}{suffix}", "sha": {}}
+        status = ""
+        if client is not None and applied:
+            _, status = _rollback_applied(client, deps, geo_dir, applied, pre_shas)
+            status = f"; {status}"
+        return {"ok": False, "msg": f"{name}: ERROR {e}{status}", "sha": {}}
     finally:
         if client is not None:
             try: client.close()
