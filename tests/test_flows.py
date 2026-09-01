@@ -2,6 +2,19 @@ import re
 import update_geofiles as ugf
 
 
+def _is_restore_cmd(cmd):
+    """True for restore shells (mv from *.bak), not apply (cp to *.bak + mv tmp)."""
+    return bool(re.search(r"mv -f [^;\s'\"]+\.bak\b", cmd))
+
+
+def _mv_paths(cmd):
+    """Return (src, dst) for the first mv -f in cmd, stripping shell quotes."""
+    m = re.search(r"mv -f ([^;\s'\"]+) ([^;\s'\"]+)", cmd)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
 class FakeDeps:
     def __init__(self):
         self.box = {"/d/ip.dat": b"OLD_IP", "/d/geo.dat": b"OLD_GEO"}  # remote current bytes
@@ -27,26 +40,25 @@ class FakeDeps:
         # simulate apply: tmp path written via upload; mv moves it into box path
         rc, out = 0, ""
         if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
-            # rollback restore (also wrapped in sh -c / sudo -S so non-root can
-            # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt> || true"
-            # Apply also contains `[ -f <tgt> ]` for the bak refresh, so key off
-            # `.bak` as the mv source (and the trailing `|| true`).
-            if ".bak" in cmd and "|| true" in cmd:
-                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
-                if m and m.group(1) in self.box:
-                    self.box[m.group(2)] = self.box[m.group(1)]
+            # Restore: `test -f <bak>; mv -f <bak> <tgt>` (no || true).
+            # Apply also mentions .bak via `cp -f <tgt> <bak>`, so key off
+            # mv *from* a .bak path.
+            if _is_restore_cmd(cmd):
+                bak, tgt = _mv_paths(cmd)
+                if bak and bak in self.box:
+                    self.box[tgt] = self.box[bak]
+                    return 0, "", ""
+                return 1, "", "restore: missing .bak"
             elif self.apply_rc != 0:
                 # Failed apply must not mutate the box (no bak refresh, no mv).
                 return self.apply_rc, "", "sudo: apply failed"
             else:
-                # parse "cp -f <tgt> <bak>" (backup creation); [^;\s] avoids trailing ';'
-                mcp = re.search(r"cp -f ([^;\s]+) ([^;\s]+)", cmd)
+                # parse "cp -f <tgt> <bak>" (backup creation); strip quotes/semicolons
+                mcp = re.search(r"cp -f ([^;\s'\"]+) ([^;\s'\"]+)", cmd)
                 if mcp and mcp.group(1) in self.box:
                     self.box[mcp.group(2)] = self.box[mcp.group(1)]
-                # parse "mv -f <tmp> <target>"
-                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
-                if m:
-                    tmp, tgt = m.group(1), m.group(2)
+                tmp, tgt = _mv_paths(cmd)
+                if tmp and tgt:
                     self.box[tgt] = self.uploads.get(tmp, b"")
         elif "pgrep" in cmd:
             out = "1234\n" if self.xray_alive else ""
@@ -162,11 +174,16 @@ def test_apply_router_rollback_when_xray_down(tmp_path):
               "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
     for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
         (tmp_path / rel).write_bytes(b)
-    d = FakeDeps(); d.box = {"/opt/etc/xray/dat/ip.dat": b"OLD"}; d.xray_alive = False
+    # Seed both live files so apply creates .bak for each (otherwise restore of
+    # a newly-created file correctly reports restore FAILED, not rolled back).
+    d = FakeDeps()
+    d.box = {"/opt/etc/xray/dat/ip.dat": b"OLD", "/opt/etc/xray/dat/geo.dat": b"OLD_GEO"}
+    d.xray_alive = False
     r = ugf.apply_router(t, golden, force=False, deps=d)
     assert r["ok"] is False
     assert "rolled back" in r["msg"]
     assert d.box["/opt/etc/xray/dat/ip.dat"] == b"OLD"  # restored
+    assert d.box["/opt/etc/xray/dat/geo.dat"] == b"OLD_GEO"
 
 
 def test_apply_xui_rollback_preserves_skipped_file(tmp_path):
@@ -200,7 +217,7 @@ def test_apply_xui_nonroot_rollback_uses_sudo(tmp_path):
     assert r["ok"] is False and "rolled back" in r["msg"]
     assert d.box["/d/ip.dat"] == b"OLD_IP"
     assert d.box["/d/geo.dat"] == b"OLD_GEO"
-    restore_cmds = [(c, sd) for c, sd in d.exec_log if ".bak" in c and "|| true" in c]
+    restore_cmds = [(c, sd) for c, sd in d.exec_log if _is_restore_cmd(c)]
     assert restore_cmds, "expected restore commands"
     assert all(c.startswith("sudo -S") for c, _ in restore_cmds)
     assert all(sd == "PW" for _, sd in restore_cmds)
@@ -217,16 +234,13 @@ def test_apply_xui_exception_rolls_back_partial(tmp_path):
         (tmp_path / rel).write_bytes(b)
     d = FakeDeps()
     real_sha = d.remote_sha256
-    calls = {"n": 0}
 
     def flaky_sha(client, path):
-        # Let apply of ip.dat succeed (upload check + post-write check), then
-        # fail only the post-write check for geo.dat (call 1 = pre_sha/skip).
+        # Poison only the post-write check for geo.dat (live bytes already NEW),
+        # not later restore verification once bak has been moved back.
         sha = real_sha(client, path)
-        if path == "/d/geo.dat":
-            calls["n"] += 1
-            if calls["n"] >= 2:
-                return "0" * 64  # mismatch vs golden after mv
+        if path == "/d/geo.dat" and d.box.get(path) == b"NEW_GEO":
+            return "0" * 64
         return sha
 
     d.remote_sha256 = flaky_sha
@@ -257,7 +271,7 @@ def test_apply_xui_failed_apply_does_not_restore_stale_bak(tmp_path):
     assert "rolled back" not in r["msg"]  # nothing was applied
     assert d.box["/d/ip.dat"] == b"GOOD_IP"  # NOT clobbered by ANCIENT_IP
     assert d.box["/d/geo.dat"] == b"GOOD_GEO"
-    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)  # no restore commands
+    assert not any(_is_restore_cmd(c) for c, _ in d.exec_log)  # no restore commands
 
 
 def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
@@ -277,12 +291,13 @@ def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
     def no_op_apply(client, cmd, stdin_data=None):
         d.exec_log.append((cmd, stdin_data))
         if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
-            if ".bak" in cmd and "|| true" in cmd:
+            if _is_restore_cmd(cmd):
                 # restore — should not be reached for this scenario
-                m = re.search(r"mv -f ([^;\s]+) ([^;\s]+)", cmd)
-                if m and m.group(1) in d.box:
-                    d.box[m.group(2)] = d.box[m.group(1)]
-                return 0, "", ""
+                bak, tgt = _mv_paths(cmd)
+                if bak and bak in d.box:
+                    d.box[tgt] = d.box[bak]
+                    return 0, "", ""
+                return 1, "", "restore: missing .bak"
             # Pretend apply "succeeded" (rc=0) but did not mutate the box —
             # mirrors chmod/chown succeeding after a failed mv.
             return 0, "", ""
@@ -297,7 +312,7 @@ def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
     assert "rolled back" not in r["msg"]
     assert d.box["/d/ip.dat"] == b"GOOD_IP"  # NOT clobbered by ANCIENT_IP
     assert d.box["/d/geo.dat"] == b"GOOD_GEO"
-    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)
+    assert not any(_is_restore_cmd(c) for c, _ in d.exec_log)
 
 
 def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
@@ -315,7 +330,7 @@ def test_apply_xui_partial_then_failed_apply_rolls_back_only_written(tmp_path):
     real_exec = d.ssh_exec
 
     def flaky_exec(client, cmd, stdin_data=None):
-        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and not (".bak" in cmd and "|| true" in cmd):
+        if (cmd.startswith("sudo -S") or cmd.startswith("sh -c")) and not _is_restore_cmd(cmd):
             apply_calls["n"] += 1
             if apply_calls["n"] >= 2:
                 d.apply_rc = 1
@@ -390,6 +405,53 @@ def test_apply_xui_ssh_drop_after_write_still_rolls_back(tmp_path):
     assert "ERROR" in r["msg"] and "rolled back" in r["msg"]
     assert d.box["/d/ip.dat"] == b"OLD_IP"
     assert d.box["/d/geo.dat"] == b"OLD_GEO"
+
+
+def test_apply_xui_no_bak_reports_restore_failed_not_rolled_back(tmp_path):
+    # First-ever apply: live files absent → apply creates no .bak. If xray then
+    # dies, restore is a no-op; must report restore FAILED, not "rolled back".
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {}  # no prior live files → no .bak on apply
+    d.xray_alive = False
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "restore FAILED" in r["msg"]
+    assert "rolled back" not in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"  # bad new file still present
+    assert d.box["/d/geo.dat"] == b"NEW_GEO"
+
+
+def test_apply_xui_restore_sha_mismatch_reports_restore_failed(tmp_path):
+    # Restore claimed success (rc=0) but live bytes never reverted — must not
+    # report "rolled back".
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.xray_alive = False
+    real_exec = d.ssh_exec
+
+    def fake_ok_restore(client, cmd, stdin_data=None):
+        if _is_restore_cmd(cmd):
+            d.exec_log.append((cmd, stdin_data))
+            return 0, "", ""  # lie: rc=0 but do not mutate box
+        return real_exec(client, cmd, stdin_data=stdin_data)
+
+    d.ssh_exec = fake_ok_restore
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "restore FAILED" in r["msg"] and "SHA mismatch" in r["msg"]
+    assert "rolled back" not in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"
 
 
 def test_apply_mirror_restart_and_verify():
