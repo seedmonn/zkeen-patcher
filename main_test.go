@@ -114,6 +114,10 @@ func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 			{Type: router.Domain_RootDomain, Value: "reddit.com"}, // duplicate survives: no dedup
 			{Type: router.Domain_RootDomain, Value: "redd.it"},
 		}},
+		{CountryCode: "AVITO", Domain: []*router.Domain{
+			{Type: router.Domain_RootDomain, Value: "avito.ru"},
+			{Type: router.Domain_Plain, Value: "avito.st"},
+		}},
 	}}
 	merged := &router.GeoSiteList{Entry: []*router.GeoSite{
 		{CountryCode: sectionDomains, Domain: []*router.Domain{
@@ -130,7 +134,7 @@ func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 	for _, e := range out.Entry {
 		names = append(names, e.CountryCode)
 	}
-	if want := []string{sectionDomains, sectionGemini, sectionReddit}; !reflect.DeepEqual(names, want) {
+	if want := []string{sectionDomains, sectionGemini, sectionReddit, sectionAvito}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("section order = %v, want %v", names, want)
 	}
 	gem := out.Entry[1]
@@ -145,6 +149,12 @@ func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 		red.Domain[1].Type != router.Domain_RootDomain ||
 		red.Domain[2].Type != router.Domain_RootDomain || red.Domain[2].Value != "redd.it" {
 		t.Fatalf("REDDIT domains = %+v, want verbatim reddit list incl. duplicate (no dedup, Type preserved)", red.Domain)
+	}
+	av := out.Entry[3]
+	if len(av.Domain) != 2 ||
+		av.Domain[0].Type != router.Domain_RootDomain || av.Domain[0].Value != "avito.ru" ||
+		av.Domain[1].Type != router.Domain_Plain || av.Domain[1].Value != "avito.st" {
+		t.Fatalf("AVITO domains = %+v, want verbatim avito list with Type preserved (RootDomain, Plain)", av.Domain)
 	}
 	if d := out.Entry[0]; len(d.Domain) != 1 || d.Domain[0].Value != "example.com" {
 		t.Fatalf("DOMAINS must be untouched, got %+v", d.Domain)

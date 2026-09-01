@@ -36,6 +36,7 @@ type copyRule struct {
 var copySections = []copyRule{
 	{sectionGemini, []string{"GOOGLE-DEEPMIND"}},
 	{sectionReddit, []string{"REDDIT"}},
+	{sectionAvito, []string{"AVITO"}},
 }
 
 var dropSections = map[string]bool{
@@ -48,6 +49,7 @@ const (
 	sectionIP      = "IP"
 	sectionGemini  = "GEMINI"
 	sectionReddit  = "REDDIT"
+	sectionAvito   = "AVITO"
 )
 
 func isYouTube(d *router.Domain) bool {
@@ -120,7 +122,11 @@ func main() {
 	merged = injectExtra(merged, dlc, sections, extraDomains)
 
 	// ── Step 5: copy dlc sections verbatim into separate sections ──
-	fmt.Println("\n=== Step 5: copy verbatim sections (GEMINI, REDDIT) ===")
+	copyNames := make([]string, len(copySections))
+	for i, r := range copySections {
+		copyNames[i] = r.target
+	}
+	fmt.Printf("\n=== Step 5: copy verbatim sections (%s) ===\n", strings.Join(copyNames, ", "))
 	merged = copyDlcSections(merged, dlc, copySections)
 	writeGeoSite(merged, *outputDir+"/merged.dat")
 

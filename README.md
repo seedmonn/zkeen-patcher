@@ -6,7 +6,7 @@ Combines domain routing lists from [zkeen-domains](https://github.com/jameszeroX
 
 | File | Description | Sections |
 |---|---|---|
-| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT |
+| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT, AVITO |
 | [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE |
 
 Built daily from latest upstream sources.
@@ -18,7 +18,7 @@ Built daily from latest upstream sources.
 2. Reads all section names from `zkeenip.dat` — finds matching domain sections in `dlc.dat` (v2fly), extracts and deduplicates
 3. Merges both sources, separates YouTube domains into YOUTUBE section
 4. Injects additional dlc.dat sections + custom domains
-5. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`)
+5. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`), `AVITO` (`avito`)
 
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU
