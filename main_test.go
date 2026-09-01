@@ -1,7 +1,10 @@
 package main
 
 import (
+	"reflect"
 	"testing"
+
+	router "github.com/v2fly/v2ray-core/v5/app/router/routercommon"
 )
 
 func TestParseExtraIP_IPv4(t *testing.T) {
@@ -58,5 +61,65 @@ func TestParseExtraIP_IPv4MappedAccepted(t *testing.T) {
 	}
 	if len(c.Ip) != 4 || c.Prefix != 32 {
 		t.Fatalf("got Ip=%v Prefix=%d", c.Ip, c.Prefix)
+	}
+}
+
+func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
+	dlc := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{CountryCode: "GOOGLE-DEEPMIND", Domain: []*router.Domain{
+			{Type: router.Domain_Plain, Value: "deepmind.google"},
+			{Type: router.Domain_RootDomain, Value: "generativelanguage.googleapis.com"},
+		}},
+		{CountryCode: "Reddit", Domain: []*router.Domain{ // lowercase name must still match
+			{Type: router.Domain_RootDomain, Value: "reddit.com"},
+			{Type: router.Domain_RootDomain, Value: "reddit.com"}, // duplicate survives: no dedup
+			{Type: router.Domain_RootDomain, Value: "redd.it"},
+		}},
+	}}
+	merged := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{CountryCode: sectionDomains, Domain: []*router.Domain{
+			{Type: router.Domain_RootDomain, Value: "example.com"},
+		}},
+	}}
+
+	out := copyDlcSections(merged, dlc, copySections)
+
+	var names []string
+	for _, e := range out.Entry {
+		names = append(names, e.CountryCode)
+	}
+	if want := []string{sectionDomains, sectionGemini, sectionReddit}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("section order = %v, want %v", names, want)
+	}
+	gem := out.Entry[1]
+	if len(gem.Domain) != 2 || gem.Domain[0].Value != "deepmind.google" || gem.Domain[1].Value != "generativelanguage.googleapis.com" {
+		t.Fatalf("GEMINI domains = %+v, want verbatim deepmind list", gem.Domain)
+	}
+	red := out.Entry[2]
+	if len(red.Domain) != 3 || red.Domain[0].Value != "reddit.com" || red.Domain[2].Value != "redd.it" {
+		t.Fatalf("REDDIT domains = %+v, want verbatim reddit list incl. duplicate (no dedup)", red.Domain)
+	}
+	if d := out.Entry[0]; len(d.Domain) != 1 || d.Domain[0].Value != "example.com" {
+		t.Fatalf("DOMAINS must be untouched, got %+v", d.Domain)
+	}
+}
+
+func TestCopyDlcSections_MissingSourceCreatesEmptySection(t *testing.T) {
+	dlc := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{CountryCode: "UNRELATED", Domain: []*router.Domain{
+			{Type: router.Domain_RootDomain, Value: "example.org"},
+		}},
+	}}
+	merged := &router.GeoSiteList{}
+
+	out := copyDlcSections(merged, dlc, copySections)
+
+	if len(out.Entry) != len(copySections) {
+		t.Fatalf("sections = %d, want %d (one per table row)", len(out.Entry), len(copySections))
+	}
+	for _, e := range out.Entry {
+		if len(e.Domain) != 0 {
+			t.Fatalf("%s: expected empty section when source missing, got %d domains", e.CountryCode, len(e.Domain))
+		}
 	}
 }

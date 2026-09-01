@@ -28,6 +28,19 @@ var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
 // dlc.dat section names routed into the separate GEMINI section (carved out of DOMAINS).
 var geminiSections = []string{"GOOGLE-DEEPMIND"}
 
+// copyRule maps a dedicated output section to the dlc.dat sections copied into
+// it. Ordered slice — map iteration would make output non-deterministic.
+type copyRule struct {
+	target  string
+	sources []string
+}
+
+// dlc.dat sections copied verbatim (no dedup) into dedicated output sections.
+var copySections = []copyRule{
+	{sectionGemini, []string{"GOOGLE-DEEPMIND"}},
+	{sectionReddit, []string{"REDDIT"}},
+}
+
 var dropSections = map[string]bool{
 	"BYPASS": true, "CN": true, "RU": true,
 }
@@ -37,6 +50,7 @@ const (
 	sectionYouTube = "YOUTUBE"
 	sectionIP      = "IP"
 	sectionGemini  = "GEMINI"
+	sectionReddit  = "REDDIT"
 )
 
 func isYouTube(d *router.Domain) bool {
@@ -370,6 +384,29 @@ func buildGemini(merged *router.GeoSiteList, dlc *router.GeoSiteList, sectionNam
 		fmt.Printf("  GEMINI <- %s (%d domains, verbatim — no dedup)\n", e.CountryCode, len(e.Domain))
 	}
 	merged.Entry = append(merged.Entry, gemini)
+	return merged
+}
+
+// copyDlcSections appends one output section per rule, copying the domains of
+// every matching dlc section verbatim (no dedup). A rule whose sources are all
+// absent from dlc still yields an (empty) section: XRay errors on routing
+// rules that reference a nonexistent geosite category.
+func copyDlcSections(merged *router.GeoSiteList, dlc *router.GeoSiteList, rules []copyRule) *router.GeoSiteList {
+	for _, rule := range rules {
+		want := map[string]bool{}
+		for _, n := range rule.sources {
+			want[strings.ToUpper(strings.TrimSpace(n))] = true
+		}
+		out := &router.GeoSite{CountryCode: rule.target}
+		for _, e := range dlc.Entry {
+			if !want[strings.ToUpper(e.CountryCode)] {
+				continue
+			}
+			out.Domain = append(out.Domain, e.Domain...)
+			fmt.Printf("  %s <- %s (%d domains, verbatim — no dedup)\n", rule.target, e.CountryCode, len(e.Domain))
+		}
+		merged.Entry = append(merged.Entry, out)
+	}
 	return merged
 }
 
