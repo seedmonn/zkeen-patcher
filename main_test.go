@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"reflect"
 	"testing"
 
@@ -64,6 +66,30 @@ func TestParseExtraIP_IPv4MappedAccepted(t *testing.T) {
 	}
 }
 
+// captureStdout runs fn with os.Stdout redirected into a pipe and returns what
+// it printed — copyDlcSections logs its progress to stdout, and tests capture
+// (and discard) it to keep `go test` output clean. The deferred restore also
+// runs when fn fails the test via t.Fatalf (runtime.Goexit).
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	return string(out)
+}
+
 func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 	dlc := &router.GeoSiteList{Entry: []*router.GeoSite{
 		{CountryCode: "GOOGLE-DEEPMIND", Domain: []*router.Domain{
@@ -82,7 +108,10 @@ func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 		}},
 	}}
 
-	out := copyDlcSections(merged, dlc, copySections)
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = copyDlcSections(merged, dlc, copySections)
+	})
 
 	var names []string
 	for _, e := range out.Entry {
@@ -112,7 +141,10 @@ func TestCopyDlcSections_MissingSourceCreatesEmptySection(t *testing.T) {
 	}}
 	merged := &router.GeoSiteList{}
 
-	out := copyDlcSections(merged, dlc, copySections)
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = copyDlcSections(merged, dlc, copySections)
+	})
 
 	if len(out.Entry) != len(copySections) {
 		t.Fatalf("sections = %d, want %d (one per table row)", len(out.Entry), len(copySections))
@@ -121,5 +153,26 @@ func TestCopyDlcSections_MissingSourceCreatesEmptySection(t *testing.T) {
 		if len(e.Domain) != 0 {
 			t.Fatalf("%s: expected empty section when source missing, got %d domains", e.CountryCode, len(e.Domain))
 		}
+	}
+}
+
+func TestCopyDlcSections_NormalizesSourceNames(t *testing.T) {
+	dlc := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{CountryCode: "Reddit", Domain: []*router.Domain{
+			{Type: router.Domain_RootDomain, Value: "reddit.com"},
+		}},
+	}}
+	rules := []copyRule{{sectionReddit, []string{" reddit "}}} // padded, lowercase: must still match "Reddit"
+
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = copyDlcSections(&router.GeoSiteList{}, dlc, rules)
+	})
+
+	if len(out.Entry) != 1 || out.Entry[0].CountryCode != sectionReddit {
+		t.Fatalf("sections = %d, want 1 REDDIT section", len(out.Entry))
+	}
+	if len(out.Entry[0].Domain) != 1 || out.Entry[0].Domain[0].Value != "reddit.com" {
+		t.Fatalf("REDDIT domains = %+v, want source name ToUpper+TrimSpace to match 'Reddit' section", out.Entry[0].Domain)
 	}
 }
