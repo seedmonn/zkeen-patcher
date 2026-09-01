@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"reflect"
@@ -77,17 +78,29 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	os.Stdout = w
+	// Release both pipe FDs and restore stdout on every exit path — return,
+	// panic, and Goexit past the explicit Close below. A deferred Close of an
+	// already-closed FD only returns an error, which is harmless here.
+	defer r.Close()
+	defer w.Close()
 	defer func() { os.Stdout = orig }()
+	os.Stdout = w
+
+	// Drain while fn runs: an undrained pipe buffers only ~16KiB, so a chatty
+	// fn would block inside its own Printf long before ReadAll could run.
+	var captured bytes.Buffer
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(&captured, r) // read error only on Close races; keep what we got
+	}()
+
 	fn()
 	if err := w.Close(); err != nil {
 		t.Fatalf("close pipe writer: %v", err)
 	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read captured stdout: %v", err)
-	}
-	return string(out)
+	<-drained
+	return captured.String()
 }
 
 func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
@@ -121,12 +134,17 @@ func TestCopyDlcSections_VerbatimInTableOrder(t *testing.T) {
 		t.Fatalf("section order = %v, want %v", names, want)
 	}
 	gem := out.Entry[1]
-	if len(gem.Domain) != 2 || gem.Domain[0].Value != "deepmind.google" || gem.Domain[1].Value != "generativelanguage.googleapis.com" {
-		t.Fatalf("GEMINI domains = %+v, want verbatim deepmind list", gem.Domain)
+	if len(gem.Domain) != 2 ||
+		gem.Domain[0].Type != router.Domain_Plain || gem.Domain[0].Value != "deepmind.google" ||
+		gem.Domain[1].Type != router.Domain_RootDomain || gem.Domain[1].Value != "generativelanguage.googleapis.com" {
+		t.Fatalf("GEMINI domains = %+v, want verbatim deepmind list with Type preserved (Plain, RootDomain)", gem.Domain)
 	}
 	red := out.Entry[2]
-	if len(red.Domain) != 3 || red.Domain[0].Value != "reddit.com" || red.Domain[2].Value != "redd.it" {
-		t.Fatalf("REDDIT domains = %+v, want verbatim reddit list incl. duplicate (no dedup)", red.Domain)
+	if len(red.Domain) != 3 ||
+		red.Domain[0].Type != router.Domain_RootDomain || red.Domain[0].Value != "reddit.com" ||
+		red.Domain[1].Type != router.Domain_RootDomain ||
+		red.Domain[2].Type != router.Domain_RootDomain || red.Domain[2].Value != "redd.it" {
+		t.Fatalf("REDDIT domains = %+v, want verbatim reddit list incl. duplicate (no dedup, Type preserved)", red.Domain)
 	}
 	if d := out.Entry[0]; len(d.Domain) != 1 || d.Domain[0].Value != "example.com" {
 		t.Fatalf("DOMAINS must be untouched, got %+v", d.Domain)
@@ -149,7 +167,10 @@ func TestCopyDlcSections_MissingSourceCreatesEmptySection(t *testing.T) {
 	if len(out.Entry) != len(copySections) {
 		t.Fatalf("sections = %d, want %d (one per table row)", len(out.Entry), len(copySections))
 	}
-	for _, e := range out.Entry {
+	for i, e := range out.Entry {
+		if e.CountryCode != copySections[i].target {
+			t.Fatalf("section %d name = %q, want %q — the empty section exists so the geosite category is referencable", i, e.CountryCode, copySections[i].target)
+		}
 		if len(e.Domain) != 0 {
 			t.Fatalf("%s: expected empty section when source missing, got %d domains", e.CountryCode, len(e.Domain))
 		}

@@ -378,6 +378,9 @@ func copyDlcSections(merged *router.GeoSiteList, dlc *router.GeoSiteList, rules 
 			out.Domain = append(out.Domain, e.Domain...)
 			fmt.Printf("  %s <- %s (%d domains, verbatim — no dedup)\n", rule.target, e.CountryCode, len(e.Domain))
 		}
+		if len(out.Domain) == 0 {
+			fmt.Printf("  ✗ %s — not found in dlc.dat\n", strings.Join(rule.sources, ", "))
+		}
 		merged.Entry = append(merged.Entry, out)
 	}
 	return merged
