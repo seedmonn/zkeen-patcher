@@ -25,9 +25,6 @@ var extraIPs = []string{}
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
 
-// dlc.dat section names routed into the separate GEMINI section (carved out of DOMAINS).
-var geminiSections = []string{"GOOGLE-DEEPMIND"}
-
 // copyRule maps a dedicated output section to the dlc.dat sections copied into
 // it. Ordered slice — map iteration would make output non-deterministic.
 type copyRule struct {
@@ -71,7 +68,6 @@ func main() {
 	dlcURL := flag.String("dlc-url", "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat", "dlc.dat download URL")
 	dlcPath := flag.String("dlc", "", "Local dlc.dat (overrides URL)")
 	ehentaiName := flag.String("inject", "", "Comma-separated dlc.dat section names to inject into DOMAINS (overrides defaults)")
-	geminiName := flag.String("gemini", "", "Comma-separated dlc.dat section names to route into GEMINI (overrides defaults)")
 	outputDir := flag.String("out", ".", "Output directory")
 	extraIPsArg := flag.String("extra-ips", "", "Comma-separated bare IPs/CIDRs to append to the IP section (personal infra — supply via secret, not in source)")
 	extraDomainsArg := flag.String("extra-domains", "", "Comma-separated extra domains to inject into DOMAINS (personal — supply via secret, not in source)")
@@ -123,13 +119,9 @@ func main() {
 	fmt.Println("\n=== Step 4: inject extra sections + domains ===")
 	merged = injectExtra(merged, dlc, sections, extraDomains)
 
-	// ── Step 5: carve out GEMINI ──
-	gSections := geminiSections
-	if *geminiName != "" {
-		gSections = strings.Split(strings.ToUpper(*geminiName), ",")
-	}
-	fmt.Println("\n=== Step 5: add GEMINI ===")
-	merged = buildGemini(merged, dlc, gSections)
+	// ── Step 5: copy dlc sections verbatim into separate sections ──
+	fmt.Println("\n=== Step 5: copy verbatim sections (GEMINI, REDDIT) ===")
+	merged = copyDlcSections(merged, dlc, copySections)
 	writeGeoSite(merged, *outputDir+"/merged.dat")
 
 	// ── Step 6: zkeenip-patched.dat ──
@@ -365,25 +357,6 @@ func injectExtra(merged *router.GeoSiteList, dlc *router.GeoSiteList, sectionNam
 		fmt.Println("    0 overlaps ✓")
 	}
 
-	return merged
-}
-
-// ── Step 5: append GEMINI (verbatim copy of a dlc section, no dedup) ──
-
-func buildGemini(merged *router.GeoSiteList, dlc *router.GeoSiteList, sectionNames []string) *router.GeoSiteList {
-	want := map[string]bool{}
-	for _, n := range sectionNames {
-		want[strings.ToUpper(strings.TrimSpace(n))] = true
-	}
-	gemini := &router.GeoSite{CountryCode: sectionGemini}
-	for _, e := range dlc.Entry {
-		if !want[strings.ToUpper(e.CountryCode)] {
-			continue
-		}
-		gemini.Domain = append(gemini.Domain, e.Domain...)
-		fmt.Printf("  GEMINI <- %s (%d domains, verbatim — no dedup)\n", e.CountryCode, len(e.Domain))
-	}
-	merged.Entry = append(merged.Entry, gemini)
 	return merged
 }
 

@@ -6,7 +6,7 @@ Combines domain routing lists from [zkeen-domains](https://github.com/jameszeroX
 
 | File | Description | Sections |
 |---|---|---|
-| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI |
+| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT |
 | [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE |
 
 Built daily from latest upstream sources.
@@ -18,7 +18,7 @@ Built daily from latest upstream sources.
 2. Reads all section names from `zkeenip.dat` — finds matching domain sections in `dlc.dat` (v2fly), extracts and deduplicates
 3. Merges both sources, separates YouTube domains into YOUTUBE section
 4. Injects additional dlc.dat sections + custom domains
-5. Carves out a separate `GEMINI` section from a dlc.dat category (default `google-deepmind`)
+5. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`)
 
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU
@@ -49,7 +49,6 @@ go run . -out .
 | `-dlc` | (download) | Local dlc.dat path |
 | `-out` | `.` | Output directory |
 | `-inject` | (built-in) | Comma-separated dlc.dat sections to inject into DOMAINS |
-| `-gemini` | (built-in) | Comma-separated dlc.dat sections to carve into `GEMINI` |
 | `-extra-ips` | (empty) | Comma-separated bare IPs/CIDRs appended to the IP section (personal infra — keep in a secret) |
 | `-extra-domains` | (empty) | Comma-separated extra domains injected into DOMAINS (personal — keep in a secret) |
 
