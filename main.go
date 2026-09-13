@@ -37,6 +37,7 @@ var copySections = []copyRule{
 	{sectionGemini, []string{"GOOGLE-DEEPMIND"}},
 	{sectionReddit, []string{"REDDIT"}},
 	{sectionAvito, []string{"AVITO"}},
+	{sectionAlibaba, []string{"ALIBABA"}},
 }
 
 var dropSections = map[string]bool{
@@ -50,6 +51,7 @@ const (
 	sectionGemini  = "GEMINI"
 	sectionReddit  = "REDDIT"
 	sectionAvito   = "AVITO"
+	sectionAlibaba = "ALIBABA"
 )
 
 func isYouTube(d *router.Domain) bool {
