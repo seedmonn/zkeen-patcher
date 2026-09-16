@@ -191,6 +191,21 @@ def _http_get(url):
 
 import time
 
+def _proxy_socket(spec):
+    """Open a SOCKS socket per spec['proxy'] (socks5(h)://host:port) for paramiko."""
+    proxy = spec.get("proxy")
+    if not proxy:
+        return None
+    import socks
+    from urllib.parse import urlparse
+    u = urlparse(proxy if "//" in proxy else "//" + proxy, scheme="socks5")
+    stype = socks.SOCKS5 if u.scheme in ("socks5", "socks5h") else socks.SOCKS4
+    s = socks.socksocket()
+    s.set_proxy(stype, u.hostname, u.port or 1080)
+    s.settimeout(15)
+    s.connect((spec["host"], int(spec["port"])))
+    return s
+
 def ssh_connect(spec, attempts=4):
     import paramiko
     connect_kwargs = {"hostname": spec["host"], "port": int(spec["port"]),
@@ -208,7 +223,8 @@ def ssh_connect(spec, attempts=4):
         c = paramiko.SSHClient()
         c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            c.connect(**connect_kwargs)
+            sock = _proxy_socket(spec)
+            c.connect(**connect_kwargs, sock=sock) if sock else c.connect(**connect_kwargs)
             return c
         except paramiko.AuthenticationException:
             raise  # config error — never retry
