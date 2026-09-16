@@ -442,6 +442,10 @@ def apply_mirror(t, golden, deps, mirror_timeout=DEFAULT_MIRROR_TIMEOUT):
     name, mirror = t["name"], t["mirror"]
     client = None
     try:
+        # already serving golden? skip the restart entirely
+        if deps.wait_mirror(mirror, golden, 5):
+            return {"ok": True, "msg": f"{name}: up to date (mirror sha match)",
+                    "sha": {k: v["sha"] for k, v in golden.items()}}
         client = deps.ssh_connect(t["ssh"])
         if not restart_container(client, t["container"], deps):
             return {"ok": False, "msg": f"{name}: docker restart {t['container']} failed", "sha": {}}
