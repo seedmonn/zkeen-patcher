@@ -2,4 +2,4 @@
 # Список ведёт АВТОМАТИЧЕСКИ контейнер kinokino-tracker на mini-pc:
 # при ротации домена старый заменяется новым, коммит+push триггерит CI,
 # все домены отсюда попадают в основную секцию DOMAINS geosite.dat.
-brogiro.cfd
+testrotate-drill.example
