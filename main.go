@@ -64,6 +64,23 @@ func isYouTube(d *router.Domain) bool {
 	return false
 }
 
+// loadListFile читает простой список домёнов: одна строка = один домен,
+// пустые строки и '#'-комментарии пропускаются. Отсутствие файла — не ошибка
+// (например, запуск из другого каталога).
+func loadListFile(path string) []string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func main() {
 	zkeenURL := flag.String("zkeen-url", "https://github.com/jameszeroX/zkeen-domains/releases/latest/download/zkeen.dat", "zkeen.dat download URL")
 	zkeenPath := flag.String("zkeen", "", "Local zkeen.dat (overrides URL)")
@@ -89,6 +106,14 @@ func main() {
 				extraDomains = append(extraDomains, s)
 			}
 		}
+	}
+
+	// kinopoisk: ротируемые редирект-домены кинопортала (lists/kinopoisk.txt).
+	// Файл обновляет бот kinokino-tracker (mini-pc): новый домен заменяет старый,
+	// push триггерит эту сборку, домены всегда входят в основную секцию DOMAINS.
+	if kinopoisk := loadListFile("lists/kinopoisk.txt"); len(kinopoisk) > 0 {
+		fmt.Printf("kinopoisk: %d domain(s) → DOMAINS: %v\n", len(kinopoisk), kinopoisk)
+		extraDomains = append(kinopoisk, extraDomains...)
 	}
 
 	// ── Load sources ──

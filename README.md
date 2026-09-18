@@ -18,7 +18,8 @@ Built daily from latest upstream sources.
 2. Reads all section names from `zkeenip.dat` — finds matching domain sections in `dlc.dat` (v2fly), extracts and deduplicates
 3. Merges both sources, separates YouTube domains into YOUTUBE section
 4. Injects additional dlc.dat sections + custom domains
-5. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`), `AVITO` (`avito`), `ALIBABA` (`alibaba`)
+5. Loads `lists/kinopoisk.txt` (rotating kinokino.vip redirect domains, auto-updated by the `kinokino-tracker` bot) into **DOMAINS**
+6. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`), `AVITO` (`avito`), `ALIBABA` (`alibaba`)
 
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU
