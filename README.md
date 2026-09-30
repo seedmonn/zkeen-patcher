@@ -24,7 +24,8 @@ Built daily from latest upstream sources.
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU
 2. Separates YouTube CIDRs into YOUTUBE, rest into IP
-3. Deduplicates all CIDRs
+3. Appends `-extra-youtube-ips` (YouTube unlock IPs) to YOUTUBE
+4. Deduplicates all CIDRs
 
 ## Auto-update geo files on nodes
 
@@ -51,6 +52,7 @@ go run . -out .
 | `-out` | `.` | Output directory |
 | `-inject` | (built-in) | Comma-separated dlc.dat sections to inject into DOMAINS |
 | `-extra-ips` | (empty) | Comma-separated bare IPs/CIDRs appended to the IP section (personal infra — keep in a secret) |
+| `-extra-youtube-ips` | (empty) | Comma-separated bare IPs/CIDRs appended to the geoip YOUTUBE section (YouTube unlock IPs — keep in a secret) |
 | `-extra-domains` | (empty) | Comma-separated extra domains injected into DOMAINS (personal — keep in a secret) |
 
 Use local files to avoid downloading:
@@ -60,13 +62,14 @@ go run . -zkeen zkeen.dat -zkeenip zkeenip.dat -dlc dlc.dat -out .
 
 ### Personal IPs/domains (secrets, not in source)
 
-No real infra data lives in the repo. The CI build (`.github/workflows/build.yml`) reads two
+No real infra data lives in the repo. The CI build (`.github/workflows/build.yml`) reads three
 **GitHub Secrets** and passes them to the flags above:
 
 ```bash
-gh secret set EXTRA_IPS     -b "1.2.3.4,5.6.7.8"     -R seedmonn/zkeen-patcher
-gh secret set EXTRA_DOMAINS -b "example.com"          -R seedmonn/zkeen-patcher
+gh secret set EXTRA_IPS           -b "1.2.3.4,5.6.7.8"     -R seedmonn/zkeen-patcher
+gh secret set EXTRA_YOUTUBE_IPS   -b "203.0.113.7"         -R seedmonn/zkeen-patcher
+gh secret set EXTRA_DOMAINS       -b "example.com"          -R seedmonn/zkeen-patcher
 ```
 
-Locally, pass the same via flags: `go run . -out . -extra-ips "…" -extra-domains "…"`.
+Locally, pass the same via flags: `go run . -out . -extra-ips "…" -extra-youtube-ips "…" -extra-domains "…"`.
 

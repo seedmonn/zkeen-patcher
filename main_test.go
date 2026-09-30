@@ -67,6 +67,45 @@ func TestParseExtraIP_IPv4MappedAccepted(t *testing.T) {
 	}
 }
 
+func TestPatchZkeenip_ExtraYouTubeIPsGoToYouTubeSection(t *testing.T) {
+	zkeenip := &router.GeoIPList{Entry: []*router.GeoIP{
+		{CountryCode: "YOUTUBE", Cidr: []*router.CIDR{
+			{Ip: []byte{172, 217, 16, 142}, Prefix: 32},
+		}},
+		{CountryCode: "NETFLIX", Cidr: []*router.CIDR{
+			{Ip: []byte{8, 8, 4, 4}, Prefix: 32},
+		}},
+	}}
+
+	orig := extraYouTubeIPs
+	extraYouTubeIPs = []string{"203.0.113.7", "203.0.113.7"} // dup must collapse
+	defer func() { extraYouTubeIPs = orig }()
+
+	var out *router.GeoIPList
+	captureStdout(t, func() { out = patchZkeenip(zkeenip) })
+
+	if len(out.Entry) != 2 || out.Entry[0].CountryCode != sectionIP || out.Entry[1].CountryCode != sectionYouTube {
+		t.Fatalf("sections = %+v, want [IP YOUTUBE]", out.Entry)
+	}
+	yt := out.Entry[1]
+	var found bool
+	for _, c := range yt.Cidr {
+		if string(c.Ip) == string([]byte{203, 0, 113, 7}) && c.Prefix == 32 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("YOUTUBE missing 203.0.113.7/32, got %+v", yt.Cidr)
+	}
+	if len(yt.Cidr) != 2 {
+		t.Fatalf("YOUTUBE CIDRs = %d, want 2 (upstream + deduped extra)", len(yt.Cidr))
+	}
+	ip := out.Entry[0]
+	if len(ip.Cidr) != 1 {
+		t.Fatalf("IP section = %d CIDRs, want 1 — extra YouTube IP must not leak into IP", len(ip.Cidr))
+	}
+}
+
 // captureStdout runs fn with os.Stdout redirected into a pipe and returns what
 // it printed — copyDlcSections logs its progress to stdout, and tests capture
 // (and discard) it to keep `go test` output clean. The deferred restore also

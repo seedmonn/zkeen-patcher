@@ -22,6 +22,11 @@ var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
 var extraIPs = []string{}
 
+// Single hosts/CIDRs appended to the YOUTUBE section (bare IP → /32) — YouTube unlock IPs
+// (e.g. a Google Global Cache node of a friendly RU ISP). Same policy as extraIPs: supply
+// via --extra-youtube-ips (GitHub Secret in CI), never hardcoded in this public repo.
+var extraYouTubeIPs = []string{}
+
 // Additional dlc.dat sections to inject into DOMAINS (by name)
 var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
 
@@ -91,12 +96,20 @@ func main() {
 	ehentaiName := flag.String("inject", "", "Comma-separated dlc.dat section names to inject into DOMAINS (overrides defaults)")
 	outputDir := flag.String("out", ".", "Output directory")
 	extraIPsArg := flag.String("extra-ips", "", "Comma-separated bare IPs/CIDRs to append to the IP section (personal infra — supply via secret, not in source)")
+	extraYouTubeIPsArg := flag.String("extra-youtube-ips", "", "Comma-separated bare IPs/CIDRs to append to the YOUTUBE section (YouTube unlock IPs — supply via secret, not in source)")
 	extraDomainsArg := flag.String("extra-domains", "", "Comma-separated extra domains to inject into DOMAINS (personal — supply via secret, not in source)")
 	flag.Parse()
 	if *extraIPsArg != "" {
 		for _, s := range strings.Split(*extraIPsArg, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				extraIPs = append(extraIPs, s)
+			}
+		}
+	}
+	if *extraYouTubeIPsArg != "" {
+		for _, s := range strings.Split(*extraYouTubeIPsArg, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				extraYouTubeIPs = append(extraYouTubeIPs, s)
 			}
 		}
 	}
@@ -458,6 +471,13 @@ func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 		fmt.Printf("  Added: %d extra IP(s)\n", len(extraIPs))
 	}
 
+	for _, ipStr := range extraYouTubeIPs {
+		yt.Cidr = append(yt.Cidr, ipToCIDR(ipStr))
+	}
+	if len(extraYouTubeIPs) > 0 {
+		fmt.Printf("  Added: %d extra YouTube IP(s)\n", len(extraYouTubeIPs))
+	}
+
 	ip.Cidr = dedupCIDRs(ip.Cidr)
 	yt.Cidr = dedupCIDRs(yt.Cidr)
 
@@ -501,9 +521,11 @@ func dedupCIDRs(cidrs []*router.CIDR) []*router.CIDR {
 // ipToCIDR turns a bare IP ("1.2.3.4" → /32) or "ip/prefix" string into a router CIDR.
 // IPv4 only — zkeenip-patched/geoip output drops IPv6, and an empty To4() IP would
 // make v2ray GeoIPMatcher.Init fail ("invalid IP address") on every consumer.
+// Error messages never include the offending value: extra IPs can be GitHub Secrets,
+// and a typo in one would otherwise echo it into the public Actions log.
 func ipToCIDR(s string) *router.CIDR {
 	c, err := parseExtraIP(s)
-	check(err, "parse extra IP "+s)
+	check(err, "parse extra IP")
 	return c
 }
 
@@ -512,22 +534,22 @@ func parseExtraIP(s string) (*router.CIDR, error) {
 	if strings.Contains(s, "/") {
 		_, ipnet, err := net.ParseCIDR(s)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid CIDR address (IPv4 host/prefix expected)")
 		}
 		ip4 := ipnet.IP.To4()
 		prefix, bits := ipnet.Mask.Size()
 		if ip4 == nil || bits != 32 {
-			return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only): %s", s)
+			return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only)")
 		}
 		return &router.CIDR{Ip: ip4, Prefix: uint32(prefix)}, nil
 	}
 	ip := net.ParseIP(s)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP: %s", s)
+		return nil, fmt.Errorf("invalid IP (IPv4 host or CIDR expected)")
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only): %s", s)
+		return nil, fmt.Errorf("IPv6 not supported (geoip is IPv4-only)")
 	}
 	return &router.CIDR{Ip: ip4, Prefix: 32}, nil
 }
