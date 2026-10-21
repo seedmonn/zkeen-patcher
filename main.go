@@ -16,7 +16,7 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com", "grabcad.com"}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
