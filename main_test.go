@@ -256,3 +256,76 @@ func TestCopyDlcSections_NormalizesSourceNames(t *testing.T) {
 		t.Fatalf("REDDIT domains = %+v, want source name ToUpper+TrimSpace to match 'Reddit' section", out.Entry[0].Domain)
 	}
 }
+
+func TestAddDirectSection_CreatesSectionAndRemovesFromDomains(t *testing.T) {
+	merged := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{
+			CountryCode: sectionDomains,
+			Domain: []*router.Domain{
+				{Type: router.Domain_RootDomain, Value: "example.com"},
+				{Type: router.Domain_RootDomain, Value: "grabcad.com"},
+				{Type: router.Domain_RootDomain, Value: "other.com"},
+			},
+		},
+		{
+			CountryCode: sectionYouTube,
+			Domain: []*router.Domain{
+				{Type: router.Domain_RootDomain, Value: "youtube.com"},
+			},
+		},
+	}}
+
+	directList := []string{"grabcad.com", "grabcad.com", "direct-site.org"}
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = addDirectSection(merged, directList)
+	})
+
+	if len(out.Entry) != 3 {
+		t.Fatalf("entries count = %d, want 3 (DOMAINS, YOUTUBE, DIRECT)", len(out.Entry))
+	}
+
+	// Verify DOMAINS had grabcad.com removed
+	domEntry := out.Entry[0]
+	if domEntry.CountryCode != sectionDomains {
+		t.Fatalf("entry[0] = %s, want %s", domEntry.CountryCode, sectionDomains)
+	}
+	for _, d := range domEntry.Domain {
+		if d.Value == "grabcad.com" {
+			t.Fatalf("DOMAINS still contains grabcad.com: %+v", domEntry.Domain)
+		}
+	}
+	if len(domEntry.Domain) != 2 {
+		t.Fatalf("DOMAINS domain count = %d, want 2", len(domEntry.Domain))
+	}
+
+	// Verify DIRECT section
+	directEntry := out.Entry[2]
+	if directEntry.CountryCode != sectionDirect {
+		t.Fatalf("entry[2] = %s, want %s", directEntry.CountryCode, sectionDirect)
+	}
+	if len(directEntry.Domain) != 2 {
+		t.Fatalf("DIRECT domain count = %d, want 2 (deduped)", len(directEntry.Domain))
+	}
+	if directEntry.Domain[0].Value != "grabcad.com" || directEntry.Domain[0].Type != router.Domain_RootDomain {
+		t.Fatalf("DIRECT[0] = %+v, want RootDomain grabcad.com", directEntry.Domain[0])
+	}
+	if directEntry.Domain[1].Value != "direct-site.org" || directEntry.Domain[1].Type != router.Domain_RootDomain {
+		t.Fatalf("DIRECT[1] = %+v, want RootDomain direct-site.org", directEntry.Domain[1])
+	}
+}
+
+func TestAddDirectSection_EmptyCreatesEmptySection(t *testing.T) {
+	merged := &router.GeoSiteList{}
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = addDirectSection(merged, nil)
+	})
+
+	if len(out.Entry) != 1 || out.Entry[0].CountryCode != sectionDirect {
+		t.Fatalf("expected 1 entry with %s, got %+v", sectionDirect, out.Entry)
+	}
+	if len(out.Entry[0].Domain) != 0 {
+		t.Fatalf("expected empty domains, got %d", len(out.Entry[0].Domain))
+	}
+}

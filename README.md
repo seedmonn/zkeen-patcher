@@ -6,7 +6,7 @@ Combines domain routing lists from [zkeen-domains](https://github.com/jameszeroX
 
 | File | Description | Sections |
 |---|---|---|
-| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT, AVITO, ALIBABA |
+| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT, AVITO, ALIBABA, DIRECT |
 | [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE |
 
 Built daily from latest upstream sources.
@@ -20,6 +20,7 @@ Built daily from latest upstream sources.
 4. Injects additional dlc.dat sections + custom domains
 5. Loads `lists/kinopoisk.txt` (rotating kinokino.vip redirect domains, auto-updated by the `kinokino-tracker` bot) into **DOMAINS**
 6. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`), `AVITO` (`avito`), `ALIBABA` (`alibaba`)
+7. Creates `DIRECT` section with direct domains (`grabcad.com`, optional `lists/direct.txt` or `--extra-direct-domains`)
 
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU
@@ -54,6 +55,7 @@ go run . -out .
 | `-extra-ips` | (empty) | Comma-separated bare IPs/CIDRs appended to the IP section (personal infra — keep in a secret) |
 | `-extra-youtube-ips` | (empty) | Comma-separated bare IPs/CIDRs appended to the geoip YOUTUBE section (YouTube unlock IPs — keep in a secret) |
 | `-extra-domains` | (empty) | Comma-separated extra domains injected into DOMAINS (personal — keep in a secret) |
+| `-extra-direct-domains` | (empty) | Comma-separated extra domains injected into DIRECT (personal — keep in a secret) |
 
 Use local files to avoid downloading:
 ```bash

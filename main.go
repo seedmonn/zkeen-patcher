@@ -16,7 +16,9 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com", "grabcad.com"}
+var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com"}
+
+var directDomains = []string{"grabcad.com"}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
@@ -57,6 +59,7 @@ const (
 	sectionReddit  = "REDDIT"
 	sectionAvito   = "AVITO"
 	sectionAlibaba = "ALIBABA"
+	sectionDirect  = "DIRECT"
 )
 
 func isYouTube(d *router.Domain) bool {
@@ -98,6 +101,7 @@ func main() {
 	extraIPsArg := flag.String("extra-ips", "", "Comma-separated bare IPs/CIDRs to append to the IP section (personal infra — supply via secret, not in source)")
 	extraYouTubeIPsArg := flag.String("extra-youtube-ips", "", "Comma-separated bare IPs/CIDRs to append to the YOUTUBE section (YouTube unlock IPs — supply via secret, not in source)")
 	extraDomainsArg := flag.String("extra-domains", "", "Comma-separated extra domains to inject into DOMAINS (personal — supply via secret, not in source)")
+	extraDirectDomainsArg := flag.String("extra-direct-domains", "", "Comma-separated extra domains to inject into DIRECT (personal — supply via secret, not in source)")
 	flag.Parse()
 	if *extraIPsArg != "" {
 		for _, s := range strings.Split(*extraIPsArg, ",") {
@@ -120,6 +124,13 @@ func main() {
 			}
 		}
 	}
+	if *extraDirectDomainsArg != "" {
+		for _, s := range strings.Split(*extraDirectDomainsArg, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				directDomains = append(directDomains, s)
+			}
+		}
+	}
 
 	// kinopoisk: ротируемые редирект-домены кинопортала (lists/kinopoisk.txt).
 	// Файл обновляет бот kinokino-tracker (mini-pc): новый домен заменяет старый,
@@ -127,6 +138,11 @@ func main() {
 	if kinopoisk := loadListFile("lists/kinopoisk.txt"); len(kinopoisk) > 0 {
 		fmt.Printf("kinopoisk: %d domain(s) → DOMAINS: %v\n", len(kinopoisk), kinopoisk)
 		extraDomains = append(kinopoisk, extraDomains...)
+	}
+
+	if directList := loadListFile("lists/direct.txt"); len(directList) > 0 {
+		fmt.Printf("direct list: %d domain(s) → DIRECT: %v\n", len(directList), directList)
+		directDomains = append(directDomains, directList...)
 	}
 
 	// ── Load sources ──
@@ -168,10 +184,14 @@ func main() {
 	}
 	fmt.Printf("\n=== Step 5: copy verbatim sections (%s) ===\n", strings.Join(copyNames, ", "))
 	merged = copyDlcSections(merged, dlc, copySections)
+
+	// ── Step 6: add DIRECT section ──
+	fmt.Println("\n=== Step 6: add DIRECT section ===")
+	merged = addDirectSection(merged, directDomains)
 	writeGeoSite(merged, *outputDir+"/merged.dat")
 
-	// ── Step 6: zkeenip-patched.dat ──
-	fmt.Println("\n=== Step 6: zkeenip → zkeenip-patched ===")
+	// ── Step 7: zkeenip-patched.dat ──
+	fmt.Println("\n=== Step 7: zkeenip → zkeenip-patched ===")
 	zkeenipPatched := patchZkeenip(zkeenip)
 	writeGeoIP(zkeenipPatched, *outputDir+"/zkeenip-patched.dat")
 
@@ -432,7 +452,50 @@ func copyDlcSections(merged *router.GeoSiteList, dlc *router.GeoSiteList, rules 
 	return merged
 }
 
-// ── Step 6: patch zkeenip.dat ──
+// ── Step 6: add DIRECT section ──
+
+func addDirectSection(merged *router.GeoSiteList, domains []string) *router.GeoSiteList {
+	directSet := make(map[string]bool, len(domains))
+	out := &router.GeoSite{CountryCode: sectionDirect}
+	for _, d := range domains {
+		d = strings.TrimSpace(strings.ToLower(d))
+		if d == "" {
+			continue
+		}
+		directSet[d] = true
+		out.Domain = append(out.Domain, &router.Domain{
+			Type:  router.Domain_RootDomain,
+			Value: d,
+		})
+	}
+	out.Domain = dedupDomains(out.Domain)
+
+	// Remove direct domains from DOMAINS to prevent routing conflicts
+	for _, e := range merged.Entry {
+		if strings.ToUpper(e.CountryCode) == sectionDomains {
+			var filtered []*router.Domain
+			var removed int
+			for _, d := range e.Domain {
+				if directSet[strings.ToLower(d.Value)] {
+					removed++
+				} else {
+					filtered = append(filtered, d)
+				}
+			}
+			if removed > 0 {
+				fmt.Printf("  Removed %d direct domain(s) from DOMAINS\n", removed)
+			}
+			e.Domain = filtered
+			break
+		}
+	}
+
+	fmt.Printf("  DIRECT: %d domain(s)\n", len(out.Domain))
+	merged.Entry = append(merged.Entry, out)
+	return merged
+}
+
+// ── Step 7: patch zkeenip.dat ──
 
 func patchZkeenip(zkeenip *router.GeoIPList) *router.GeoIPList {
 	fmt.Printf("  Input: %d sections\n", len(zkeenip.Entry))
