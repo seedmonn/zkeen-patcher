@@ -306,10 +306,19 @@ def _record_apply_result(applied, remote, gsha, pre_sha, post_sha, rc, name, err
     completed — mark applied *before* callers rely on a follow-up SSH round
     trip, so a drop during post-write SHA still rolls back. If rc==0 yet the
     target is unchanged and not golden, un-mark so a stale .bak is not revived.
+
+    post_sha == gsha alone must not mark applied when rc!=0 and bytes are
+    unchanged: --force re-pushes already-golden files, so a failed apply
+    (sudo/mv) leaves live intact. Marking applied would let a later rollback
+    revive a prior-run stale .bak over still-good live geo.
     """
     if rc == 0:
         applied[remote] = gsha
     if post_sha == gsha:
+        if rc != 0 and pre_sha == post_sha:
+            applied.pop(remote, None)
+            detail = f": {err.strip()[:200]}" if err and err.strip() else ""
+            raise UpdateError(f"{name}: apply {remote} failed (rc={rc}){detail}")
         applied[remote] = gsha
         return
     if pre_sha != post_sha:
