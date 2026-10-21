@@ -6,7 +6,7 @@ Combines domain routing lists from [zkeen-domains](https://github.com/jameszeroX
 
 | File | Description | Sections |
 |---|---|---|
-| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT, AVITO, ALIBABA, DIRECT |
+| [geosite.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geosite.dat) | Domains | DOMAINS, YOUTUBE, GEMINI, REDDIT, DIRECT |
 | [geoip.dat](https://github.com/seedmonn/zkeen-patcher/releases/latest/download/geoip.dat) | IP ranges (CIDR) | IP, YOUTUBE |
 
 Built daily from latest upstream sources.
@@ -19,8 +19,8 @@ Built daily from latest upstream sources.
 3. Merges both sources, separates YouTube domains into YOUTUBE section
 4. Injects additional dlc.dat sections + custom domains
 5. Loads `lists/kinopoisk.txt` (rotating kinokino.vip redirect domains, auto-updated by the `kinokino-tracker` bot) into **DOMAINS**
-6. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`), `AVITO` (`avito`), `ALIBABA` (`alibaba`)
-7. Creates `DIRECT` section with direct domains (`grabcad.com`, duplicated domains from `AVITO` and `ALIBABA`, optional `lists/direct.txt` or `--extra-direct-domains`)
+6. Copies dlc.dat sections verbatim into separate sections: `GEMINI` (`google-deepmind`), `REDDIT` (`reddit`)
+7. Creates `DIRECT` section with direct domains (`grabcad.com`, `AVITO` and `ALIBABA` from `dlc.dat`, optional `lists/direct.txt` or `--extra-direct-domains`)
 
 ### geoip.dat
 1. Downloads `zkeenip.dat` — removes CN, RU

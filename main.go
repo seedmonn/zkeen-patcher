@@ -20,8 +20,8 @@ var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs
 
 var directDomains = []string{"grabcad.com"}
 
-// Sections whose domains are duplicated into DIRECT.
-var directCopySections = []string{sectionAvito, sectionAlibaba}
+// dlc.dat sections copied into DIRECT.
+var directDlcSections = []string{"AVITO", "ALIBABA"}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
@@ -46,8 +46,6 @@ type copyRule struct {
 var copySections = []copyRule{
 	{sectionGemini, []string{"GOOGLE-DEEPMIND"}},
 	{sectionReddit, []string{"REDDIT"}},
-	{sectionAvito, []string{"AVITO"}},
-	{sectionAlibaba, []string{"ALIBABA"}},
 }
 
 var dropSections = map[string]bool{
@@ -60,8 +58,6 @@ const (
 	sectionIP      = "IP"
 	sectionGemini  = "GEMINI"
 	sectionReddit  = "REDDIT"
-	sectionAvito   = "AVITO"
-	sectionAlibaba = "ALIBABA"
 	sectionDirect  = "DIRECT"
 )
 
@@ -190,7 +186,7 @@ func main() {
 
 	// ── Step 6: add DIRECT section ──
 	fmt.Println("\n=== Step 6: add DIRECT section ===")
-	merged = addDirectSection(merged, directDomains, directCopySections)
+	merged = addDirectSection(merged, dlc, directDomains, directDlcSections)
 	writeGeoSite(merged, *outputDir+"/merged.dat")
 
 	// ── Step 7: zkeenip-patched.dat ──
@@ -457,8 +453,8 @@ func copyDlcSections(merged *router.GeoSiteList, dlc *router.GeoSiteList, rules 
 
 // ── Step 6: add DIRECT section ──
 
-func addDirectSection(merged *router.GeoSiteList, domains []string, copyFromSections []string) *router.GeoSiteList {
-	directSet := make(map[string]bool, len(domains))
+func addDirectSection(merged *router.GeoSiteList, dlc *router.GeoSiteList, domains []string, dlcSections []string) *router.GeoSiteList {
+	directSet := make(map[string]bool)
 	out := &router.GeoSite{CountryCode: sectionDirect}
 	for _, d := range domains {
 		d = strings.TrimSpace(strings.ToLower(d))
@@ -472,18 +468,23 @@ func addDirectSection(merged *router.GeoSiteList, domains []string, copyFromSect
 		})
 	}
 
-	copySet := make(map[string]bool, len(copyFromSections))
-	for _, s := range copyFromSections {
-		copySet[strings.ToUpper(strings.TrimSpace(s))] = true
+	dlcIdx := map[string]*router.GeoSite{}
+	if dlc != nil {
+		for _, e := range dlc.Entry {
+			dlcIdx[strings.ToUpper(strings.TrimSpace(e.CountryCode))] = e
+		}
 	}
 
-	for _, e := range merged.Entry {
-		if copySet[strings.ToUpper(e.CountryCode)] {
-			out.Domain = append(out.Domain, e.Domain...)
-			for _, d := range e.Domain {
+	for _, secName := range dlcSections {
+		name := strings.ToUpper(strings.TrimSpace(secName))
+		if s, ok := dlcIdx[name]; ok {
+			out.Domain = append(out.Domain, s.Domain...)
+			for _, d := range s.Domain {
 				directSet[strings.ToLower(d.Value)] = true
 			}
-			fmt.Printf("  DIRECT <- %s (%d domains duplicated)\n", e.CountryCode, len(e.Domain))
+			fmt.Printf("  DIRECT <- %s (%d domains from dlc.dat)\n", name, len(s.Domain))
+		} else {
+			fmt.Printf("  ✗ %s — not found in dlc.dat\n", name)
 		}
 	}
 
