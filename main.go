@@ -20,6 +20,9 @@ var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs
 
 var directDomains = []string{"grabcad.com"}
 
+// Sections whose domains are duplicated into DIRECT.
+var directCopySections = []string{sectionAvito, sectionAlibaba}
+
 // Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
 var extraIPs = []string{}
@@ -187,7 +190,7 @@ func main() {
 
 	// ── Step 6: add DIRECT section ──
 	fmt.Println("\n=== Step 6: add DIRECT section ===")
-	merged = addDirectSection(merged, directDomains)
+	merged = addDirectSection(merged, directDomains, directCopySections)
 	writeGeoSite(merged, *outputDir+"/merged.dat")
 
 	// ── Step 7: zkeenip-patched.dat ──
@@ -454,7 +457,7 @@ func copyDlcSections(merged *router.GeoSiteList, dlc *router.GeoSiteList, rules 
 
 // ── Step 6: add DIRECT section ──
 
-func addDirectSection(merged *router.GeoSiteList, domains []string) *router.GeoSiteList {
+func addDirectSection(merged *router.GeoSiteList, domains []string, copyFromSections []string) *router.GeoSiteList {
 	directSet := make(map[string]bool, len(domains))
 	out := &router.GeoSite{CountryCode: sectionDirect}
 	for _, d := range domains {
@@ -468,6 +471,22 @@ func addDirectSection(merged *router.GeoSiteList, domains []string) *router.GeoS
 			Value: d,
 		})
 	}
+
+	copySet := make(map[string]bool, len(copyFromSections))
+	for _, s := range copyFromSections {
+		copySet[strings.ToUpper(strings.TrimSpace(s))] = true
+	}
+
+	for _, e := range merged.Entry {
+		if copySet[strings.ToUpper(e.CountryCode)] {
+			out.Domain = append(out.Domain, e.Domain...)
+			for _, d := range e.Domain {
+				directSet[strings.ToLower(d.Value)] = true
+			}
+			fmt.Printf("  DIRECT <- %s (%d domains duplicated)\n", e.CountryCode, len(e.Domain))
+		}
+	}
+
 	out.Domain = dedupDomains(out.Domain)
 
 	// Remove direct domains from DOMAINS to prevent routing conflicts

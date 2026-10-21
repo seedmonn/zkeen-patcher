@@ -278,7 +278,7 @@ func TestAddDirectSection_CreatesSectionAndRemovesFromDomains(t *testing.T) {
 	directList := []string{"grabcad.com", "grabcad.com", "direct-site.org"}
 	var out *router.GeoSiteList
 	captureStdout(t, func() {
-		out = addDirectSection(merged, directList)
+		out = addDirectSection(merged, directList, nil)
 	})
 
 	if len(out.Entry) != 3 {
@@ -315,11 +315,75 @@ func TestAddDirectSection_CreatesSectionAndRemovesFromDomains(t *testing.T) {
 	}
 }
 
+func TestAddDirectSection_DuplicatesFromSections(t *testing.T) {
+	merged := &router.GeoSiteList{Entry: []*router.GeoSite{
+		{
+			CountryCode: sectionDomains,
+			Domain: []*router.Domain{
+				{Type: router.Domain_RootDomain, Value: "example.com"},
+				{Type: router.Domain_RootDomain, Value: "avito.ru"},
+			},
+		},
+		{
+			CountryCode: sectionAvito,
+			Domain: []*router.Domain{
+				{Type: router.Domain_RootDomain, Value: "avito.ru"},
+				{Type: router.Domain_Plain, Value: "avito.st"},
+			},
+		},
+		{
+			CountryCode: sectionAlibaba,
+			Domain: []*router.Domain{
+				{Type: router.Domain_RootDomain, Value: "taobao.com"},
+			},
+		},
+	}}
+
+	directList := []string{"grabcad.com"}
+	var out *router.GeoSiteList
+	captureStdout(t, func() {
+		out = addDirectSection(merged, directList, []string{sectionAvito, sectionAlibaba})
+	})
+
+	if len(out.Entry) != 4 {
+		t.Fatalf("entries count = %d, want 4 (DOMAINS, AVITO, ALIBABA, DIRECT)", len(out.Entry))
+	}
+
+	// AVITO and ALIBABA sections must remain intact
+	if out.Entry[1].CountryCode != sectionAvito || len(out.Entry[1].Domain) != 2 {
+		t.Fatalf("AVITO section modified: %+v", out.Entry[1])
+	}
+	if out.Entry[2].CountryCode != sectionAlibaba || len(out.Entry[2].Domain) != 1 {
+		t.Fatalf("ALIBABA section modified: %+v", out.Entry[2])
+	}
+
+	// DOMAINS should have avito.ru removed
+	domEntry := out.Entry[0]
+	if len(domEntry.Domain) != 1 || domEntry.Domain[0].Value != "example.com" {
+		t.Fatalf("DOMAINS domain not filtered: %+v", domEntry.Domain)
+	}
+
+	// DIRECT section must contain grabcad.com + AVITO domains + ALIBABA domains
+	directEntry := out.Entry[3]
+	if directEntry.CountryCode != sectionDirect {
+		t.Fatalf("entry[3] = %s, want %s", directEntry.CountryCode, sectionDirect)
+	}
+	if len(directEntry.Domain) != 4 {
+		t.Fatalf("DIRECT domain count = %d, want 4 (grabcad.com, avito.ru, avito.st, taobao.com)", len(directEntry.Domain))
+	}
+	wantValues := []string{"grabcad.com", "avito.ru", "avito.st", "taobao.com"}
+	for i, want := range wantValues {
+		if directEntry.Domain[i].Value != want {
+			t.Fatalf("DIRECT[%d] = %q, want %q", i, directEntry.Domain[i].Value, want)
+		}
+	}
+}
+
 func TestAddDirectSection_EmptyCreatesEmptySection(t *testing.T) {
 	merged := &router.GeoSiteList{}
 	var out *router.GeoSiteList
 	captureStdout(t, func() {
-		out = addDirectSection(merged, nil)
+		out = addDirectSection(merged, nil, nil)
 	})
 
 	if len(out.Entry) != 1 || out.Entry[0].CountryCode != sectionDirect {
