@@ -260,6 +260,44 @@ def test_apply_xui_failed_apply_does_not_restore_stale_bak(tmp_path):
     assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)  # no restore commands
 
 
+def test_apply_xui_force_failed_apply_on_golden_does_not_restore_stale_bak(tmp_path):
+    # Regression: --force bypasses skip when live already matches golden. A
+    # failed apply (rc!=0) leaves bytes untouched; post_sha == gsha must NOT
+    # mark applied — otherwise xray-down rollback revives a prior-run stale
+    # .bak over still-good live geo (and a healthy xray path falsely reports
+    # "updated").
+    t = {"name": "MSK", "kind": "xui", "ssh": {"host": "h", "port": 22, "user": "root"},
+         "geo_dir": "/d", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"GOLD_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"GOLD_GEO")}}
+    for rel, b in [("geoip.dat", b"GOLD_IP"), ("geosite.dat", b"GOLD_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.box = {"/d/ip.dat": b"GOLD_IP", "/d/ip.dat.bak": b"ANCIENT_IP",
+             "/d/geo.dat": b"GOLD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
+    d.apply_rc = 1
+    d.xray_alive = False
+    r = ugf.apply_xui(t, golden, force=True, deps=d)
+    assert r["ok"] is False
+    assert "apply" in r["msg"] and "failed" in r["msg"]
+    assert "rolled back" not in r["msg"]
+    assert d.box["/d/ip.dat"] == b"GOLD_IP"
+    assert d.box["/d/geo.dat"] == b"GOLD_GEO"
+    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)
+
+    # Healthy xray must not report a successful update either.
+    d2 = FakeDeps()
+    d2.box = {"/d/ip.dat": b"GOLD_IP", "/d/ip.dat.bak": b"ANCIENT_IP",
+              "/d/geo.dat": b"GOLD_GEO", "/d/geo.dat.bak": b"ANCIENT_GEO"}
+    d2.apply_rc = 1
+    d2.xray_alive = True
+    r2 = ugf.apply_xui(t, golden, force=True, deps=d2)
+    assert r2["ok"] is False
+    assert "updated" not in r2["msg"]
+    assert d2.box["/d/ip.dat"] == b"GOLD_IP"
+    assert d2.box["/d/geo.dat"] == b"GOLD_GEO"
+
+
 def test_apply_xui_rc0_unchanged_target_does_not_restore_stale_bak(tmp_path):
     # Regression: without set -e, mv can fail while chmod/chown still yield
     # rc==0 and the live file is unchanged. Must NOT treat that as "applied"
