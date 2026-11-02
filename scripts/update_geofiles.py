@@ -300,6 +300,31 @@ def _post_check_xray(deps, client):
     rc, out, _ = deps.ssh_exec(client, "pgrep -f '[x]ray'")
     return out.strip() != ""
 
+# systemctl restart x-ui returns once the unit is active; xray (a child of
+# x-ui) can lag several seconds behind — longer than the old single sleep(5).
+DEFAULT_XRAY_READY_TIMEOUT = 30
+SSH_XUI_READY_TIMEOUT = 45
+
+def _wait_xray(deps, client, timeout=DEFAULT_XRAY_READY_TIMEOUT, interval=2):
+    """Poll until xray is alive or timeout. Returns True if up."""
+    deadline = timeout
+    while True:
+        if _post_check_xray(deps, client):
+            return True
+        if deadline <= 0:
+            return False
+        deps.sleep(interval)
+        deadline -= interval
+
+def _ssh_restart_xui(client, deps, user, sudo_pw=None):
+    """Restart the x-ui unit over SSH (DPI fallback when panel API is unreachable)."""
+    restart_cmd = "systemctl restart x-ui"
+    if needs_sudo(user):
+        restart_cmd = f"sudo -S -p '' {restart_cmd}"
+    rc, _, _ = deps.ssh_exec(
+        client, restart_cmd, stdin_data=(sudo_pw if needs_sudo(user) else None))
+    return rc == 0
+
 def _restore(client, deps, geo_dir, remote_name, user="root", sudo_pw=None):
     cmd, stdin = build_restore_command(geo_dir, remote_name, user)
     deps.ssh_exec(client, cmd, stdin_data=(sudo_pw if stdin else None))
@@ -360,25 +385,29 @@ def apply_xui(t, golden, force, deps, no_restart=False):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
         ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         restarted_via = "xray restarted"
+        used_ssh_restart = False
+        ready_timeout = DEFAULT_XRAY_READY_TIMEOUT
         if not ok:
             # Fallback to SSH restart if panel API failed (e.g. non-standard panel port blocked by DPI)
-            restart_cmd = "systemctl restart x-ui"
-            if needs_sudo(user):
-                restart_cmd = f"sudo -S -p '' {restart_cmd}"
-            rc, _, _ = deps.ssh_exec(client, restart_cmd, stdin_data=(sudo_pw if stdin else None))
-            if rc == 0:
+            if _ssh_restart_xui(client, deps, user, sudo_pw):
                 ok = True
+                used_ssh_restart = True
                 restarted_via = "xray restarted (via ssh fallback)"
+                # Full x-ui unit restart is slower than restartXrayService.
+                ready_timeout = SSH_XUI_READY_TIMEOUT
         if not ok:
             return {"ok": False, "msg": f"{name}: restart API failed; files written but xray NOT restarted", "sha": applied}
-        deps.sleep(5)
-        if _post_check_xray(deps, client):
+        if _wait_xray(deps, client, timeout=ready_timeout):
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + {restarted_via}", "sha": applied}
         # rollback — only files written this run; restoring untouched files
         # would clobber them with a stale .bak left over from a prior apply.
         for remote in applied:
             _restore(client, deps, geo_dir, remote, user=user, sudo_pw=sudo_pw)
-        deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
+        # Re-restart with the same method that worked; panel API stays blocked under DPI.
+        if used_ssh_restart:
+            _ssh_restart_xui(client, deps, user, sudo_pw)
+        else:
+            deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         deps.sleep(3)
         return {"ok": False, "msg": f"{name}: xray down after update; rolled back", "sha": applied}
     except Exception as e:
@@ -426,8 +455,7 @@ def apply_router(t, golden, force, deps, no_restart=False):
         rc, _, _ = deps.ssh_exec(client, "xkeen -restart")
         if rc != 0:
             return {"ok": False, "msg": f"{name}: xkeen -restart failed (rc={rc}); files written but core NOT restarted", "sha": applied}
-        deps.sleep(5)
-        if _post_check_xray(deps, client):
+        if _wait_xray(deps, client):
             return {"ok": True, "msg": f"{name}: updated + xkeen restarted", "sha": applied}
         # rollback — only files written this run (see apply_xui note).
         for remote in applied:
