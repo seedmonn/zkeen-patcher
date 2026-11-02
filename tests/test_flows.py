@@ -9,6 +9,7 @@ class FakeDeps:
         self.exec_log = []
         self.xray_alive = True
         self.restart_ok = True
+        self.systemctl_restart_ok = None
         self.xkeen_rc = 0
         self.apply_rc = 0  # non-zero simulates sudo/mv failure without touching the box
 
@@ -26,7 +27,9 @@ class FakeDeps:
         self.exec_log.append((cmd, stdin_data))
         # simulate apply: tmp path written via upload; mv moves it into box path
         rc, out = 0, ""
-        if cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
+        if "systemctl restart x-ui" in cmd:
+            rc = 0 if (self.systemctl_restart_ok if self.systemctl_restart_ok is not None else self.restart_ok) else 1
+        elif cmd.startswith("sudo -S") or cmd.startswith("sh -c"):
             # rollback restore (also wrapped in sh -c / sudo -S so non-root can
             # move root-owned targets): "[ -f <bak> ] && mv -f <bak> <tgt> || true"
             # Apply also contains `[ -f <tgt> ]` for the bak refresh, so key off
@@ -56,6 +59,8 @@ class FakeDeps:
         return rc, out, ""
 
     def restart_xray(self, base, token, post=None): return self.restart_ok
+
+    def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None): return False
 
     sleep = staticmethod(lambda *a, **k: None)
 
@@ -139,6 +144,22 @@ def test_apply_xui_restart_fails_returns_false(tmp_path):
     assert r["ok"] is False
     assert "restart API failed" in r["msg"]
     assert d.box["/d/ip.dat"] == b"NEW_IP"  # files written, not rolled back
+
+
+def test_apply_xui_panel_restart_fails_ssh_fallback_succeeds(tmp_path):
+    # When panel restart API fails (e.g. DPI port block), SSH systemctl fallback succeeds
+    t = {"name": "EST", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"}, "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.restart_ok = False
+    d.systemctl_restart_ok = True
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is True
+    assert "xray restarted" in r["msg"]
+    assert any("systemctl restart x-ui" in c for c, _ in d.exec_log)
 
 
 def test_apply_router_restart_fails_returns_false(tmp_path):
@@ -398,7 +419,8 @@ def test_apply_mirror_restart_and_verify():
          "container": "geo-updater", "mirror": "http://m:33133"}
     golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": sha}, "geosite.dat": {"path": "/g/geosite.dat", "sha": sha}}
     class MD(FakeDeps):
-        def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None): return True
+        def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None):
+            return timeout != 5
     d = MD()
     r = ugf.apply_mirror(t, golden, d)
     assert r["ok"], r["msg"]
@@ -414,10 +436,25 @@ def test_apply_mirror_honors_mirror_timeout():
     class MD(FakeDeps):
         def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None):
             seen["timeout"] = timeout
-            return True
+            return timeout != 5
     d = MD()
     ugf.apply_mirror(t, golden, d, mirror_timeout=120)
     assert seen["timeout"] == 120
+
+
+def test_apply_mirror_skips_when_already_golden():
+    sha = ugf.sha256_bytes(b"FRESH")
+    t = {"name": "LAN-MIRROR", "kind": "docker-updater", "ssh": {"host": "m", "port": 20202, "user": "ginseng"},
+         "container": "geo-updater", "mirror": "http://m:33133"}
+    golden = {"geoip.dat": {"path": "/g/geoip.dat", "sha": sha}, "geosite.dat": {"path": "/g/geosite.dat", "sha": sha}}
+    class MD(FakeDeps):
+        def wait_mirror(self, mirror, golden_, timeout, get=None, sleep=None):
+            return True
+    d = MD()
+    r = ugf.apply_mirror(t, golden, d)
+    assert r["ok"], r["msg"]
+    assert "mirror sha match" in r["msg"]
+    assert d.exec_log == []
 
 
 def test_format_summary_counts():

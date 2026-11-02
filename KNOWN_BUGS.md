@@ -27,41 +27,20 @@ are robustness/hygiene issues that bite in specific situations.
   re-fetch the target SHA after restoring and compare it to the pre-apply SHA;
   report "restore failed / no backup existed" as a distinct outcome.
 
-## 2. `ssh_exec` can hang forever — minor
+## 2. `ssh_exec` can hang forever — minor [FIXED 2026-11-02]
 
 - **Where:** `scripts/update_geofiles.py:228`.
-- **What:** `recv_exit_status()` blocks on an event that only fires when the
-  remote closes the channel; the `timeout=60` passed to `exec_command()`
-  bounds socket reads, not this wait.
-- **Failure scenario:** `docker restart geo-updater` or `xkeen -restart` hangs
-  on a wedged remote → the whole multi-target run freezes with no summary and
-  no exit code; all later targets are never attempted.
-- **Fix direction:** enforce a wall-clock deadline (poll `exit_status_ready()`
-  with `channel.settimeout()`, close the channel when the deadline passes) and
-  raise `UpdateError` so the per-target error handling takes over.
+- **Status:** Fixed by adding channel wall-clock polling deadline before `recv_exit_status()`.
 
-## 3. `apply_mirror` restarts the container even when the mirror is current — minor
+## 3. `apply_mirror` restarts the container even when the mirror is current — minor [FIXED 2026-09-16 / tested 2026-11-02]
 
 - **Where:** `scripts/update_geofiles.py:429`.
-- **What:** unlike `apply_xui`/`apply_router` (which skip on SHA match),
-  `apply_mirror` never checks the mirror's served SHAs before restarting the
-  geo-updater container.
-- **Failure scenario:** re-running the script after a partial failure restarts
-  an already-converged mirror for nothing — avoidable LAN outage plus a 30 s
-  convergence wait on every run.
-- **Fix direction:** compare `mirror_sha()` against golden for both files
-  first; restart only when stale (mirror of `should_skip_file`).
+- **Status:** Fixed in commit `75226e9` by checking `wait_mirror(..., 5)` before restart; unit tests updated in `test_flows.py`.
 
-## 4. Config validation covers ALL targets before `--only` filtering — minor
+## 4. Config validation covers ALL targets before `--only` filtering — minor [FIXED 2026-11-02]
 
 - **Where:** `scripts/update_geofiles.py:474`.
-- **What:** `main()` validates every entry in `cfg["targets"]` and exits 1 on
-  any error before `filter_targets()` applies `--only`.
-- **Failure scenario:** a typo in the LAN-MIRROR entry blocks
-  `--only MSK` entirely — you can't update any node until an unrelated entry
-  is fixed.
-- **Fix direction:** filter first, validate only the selected targets (or
-  downgrade non-selected config errors to warnings).
+- **Status:** Fixed by running `filter_targets()` before target validation.
 
 ## 5. `download()` has no timeout — minor
 

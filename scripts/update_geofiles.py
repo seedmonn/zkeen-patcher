@@ -142,11 +142,11 @@ def _http_fetch(url):
     r = requests.get(url, timeout=60)
     return (r.content, r.status_code)
 
-def restart_xray(base, token, post):
+def restart_xray(base, token, post, timeout=5):
     headers = {"Authorization": f"Bearer {token}"}
     for url in restart_urls(base):
         try:
-            text, status = post(url, headers=headers, data=b"", verify=False, timeout=30)
+            text, status = post(url, headers=headers, data=b"", verify=False, timeout=timeout)
         except Exception:
             continue
         if status == 404:
@@ -235,12 +235,17 @@ def ssh_connect(spec, attempts=4):
                 time.sleep(2 * (i + 1))
     raise last
 
-def ssh_exec(client, cmd, stdin_data=None):
-    stdin, stdout, stderr = client.exec_command(cmd, timeout=60)
+def ssh_exec(client, cmd, stdin_data=None, timeout=60):
+    stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
     if stdin_data is not None:
         stdin.write(stdin_data); stdin.flush()
     try: stdin.channel.shutdown_write()
     except Exception: pass
+    t0 = time.time()
+    while not stdout.channel.exit_status_ready():
+        if time.time() - t0 > timeout:
+            raise UpdateError(f"ssh_exec timed out after {timeout}s: {cmd}")
+        time.sleep(0.2)
     rc = stdout.channel.recv_exit_status()
     return rc, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
 
@@ -354,11 +359,21 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         if no_restart:
             return {"ok": True, "msg": f"{name}: updated {','.join(applied)} (--no-restart; core not restarted)", "sha": applied}
         ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
+        restarted_via = "xray restarted"
+        if not ok:
+            # Fallback to SSH restart if panel API failed (e.g. non-standard panel port blocked by DPI)
+            restart_cmd = "systemctl restart x-ui"
+            if needs_sudo(user):
+                restart_cmd = f"sudo -S -p '' {restart_cmd}"
+            rc, _, _ = deps.ssh_exec(client, restart_cmd, stdin_data=(sudo_pw if stdin else None))
+            if rc == 0:
+                ok = True
+                restarted_via = "xray restarted (via ssh fallback)"
         if not ok:
             return {"ok": False, "msg": f"{name}: restart API failed; files written but xray NOT restarted", "sha": applied}
         deps.sleep(5)
         if _post_check_xray(deps, client):
-            return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + xray restarted", "sha": applied}
+            return {"ok": True, "msg": f"{name}: updated {','.join(applied)} + {restarted_via}", "sha": applied}
         # rollback — only files written this run; restoring untouched files
         # would clobber them with a stale .bak left over from a prior apply.
         for remote in applied:
@@ -490,8 +505,11 @@ def main(argv=None):
     cfg = resolve_config(args.config)
     min_size = cfg.get("min_size", DEFAULT_MIN_SIZE)
     mirror_timeout = cfg.get("mirror_timeout", DEFAULT_MIRROR_TIMEOUT)
+    targets = filter_targets(cfg["targets"], args.only)
+    if not targets:
+        print("no targets selected"); return 2
     errors = []
-    for t in cfg["targets"]:
+    for t in targets:
         try:
             validate_target(t)
         except UpdateError as e:
@@ -499,9 +517,6 @@ def main(argv=None):
     if errors:
         print("config errors:\n" + "\n".join(errors))
         return 1
-    targets = filter_targets(cfg["targets"], args.only)
-    if not targets:
-        print("no targets selected"); return 2
 
     import tempfile
     with tempfile.TemporaryDirectory(prefix="zkeen-geo-") as tmp:
