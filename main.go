@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	router "github.com/v2fly/v2ray-core/v5/app/router/routercommon"
 	"google.golang.org/protobuf/proto"
@@ -654,15 +655,36 @@ func overlapCount(a, b []*router.Domain) int {
 // ── Generic helpers ──
 
 func download(url string) ([]byte, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			lastErr = err
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+			continue
+		}
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+			continue
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+			continue
+		}
+		return data, nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-	return io.ReadAll(resp.Body)
+	return nil, lastErr
 }
 
 func check(err error, msg string) {
