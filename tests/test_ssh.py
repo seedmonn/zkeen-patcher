@@ -163,3 +163,48 @@ def test_ssh_upload_raises_on_nonzero_rc(tmp_path):
 
     with pytest.raises(ugf.UpdateError):
         ugf.ssh_upload(FakeClient(), str(f), "/tmp/x.dat")
+
+
+def test_ssh_connect_uses_jump_and_closes_jump_client(monkeypatch):
+    events = []
+
+    class FakeJumpTransport:
+        def is_active(self):
+            return True
+
+        def open_channel(self, kind, dest_addr, src_addr, timeout=None):
+            events.append(("open_channel", kind, dest_addr))
+            return "JUMP_CHAN"
+
+    class FakeClient:
+        def __init__(self):
+            self.host = None
+
+        def set_missing_host_key_policy(self, p):
+            pass
+
+        def connect(self, **kw):
+            self.host = kw["hostname"]
+            events.append(("connect", kw["hostname"], kw["port"], kw.get("sock")))
+
+        def get_transport(self):
+            return FakeJumpTransport()
+
+        def close(self):
+            events.append(("close", self.host))
+
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: FakeClient())
+    spec = {
+        "host": "2.29.128.8",
+        "port": 53908,
+        "user": "seedmon",
+        "jump": {"host": "38.180.164.100", "port": 53908, "user": "seedmon"},
+    }
+    c = ugf.ssh_connect(spec)
+    assert ("connect", "38.180.164.100", 53908, None) in events
+    assert ("open_channel", "direct-tcpip", ("2.29.128.8", 53908)) in events
+    assert ("connect", "2.29.128.8", 53908, "JUMP_CHAN") in events
+    c.close()
+    assert ("close", "2.29.128.8") in events
+    assert ("close", "38.180.164.100") in events
+

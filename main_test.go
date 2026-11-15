@@ -36,6 +36,21 @@ func TestParseExtraIP_IPv4CIDR(t *testing.T) {
 	}
 }
 
+func TestPublicExtraIPs_AllValidIPv4CIDRs(t *testing.T) {
+	if len(publicExtraIPs) == 0 {
+		t.Fatalf("expected non-empty publicExtraIPs")
+	}
+	for _, s := range publicExtraIPs {
+		c, err := parseExtraIP(s)
+		if err != nil {
+			t.Fatalf("publicExtraIPs %q invalid: %v", s, err)
+		}
+		if len(c.Ip) != 4 || c.Prefix == 0 || c.Prefix > 32 {
+			t.Fatalf("publicExtraIPs %q bad CIDR: Ip=%v Prefix=%d", s, c.Ip, c.Prefix)
+		}
+	}
+}
+
 func TestParseExtraIP_RejectsIPv6(t *testing.T) {
 	for _, s := range []string{"2001:db8::1", "2001:db8::/32", "::1"} {
 		c, err := parseExtraIP(s)

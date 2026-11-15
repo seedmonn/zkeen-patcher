@@ -48,6 +48,12 @@ def validate_target(t: dict) -> None:
     for k in ("host", "port", "user"):
         if k not in ssh:
             raise UpdateError(f"target {t['name']} ssh missing {k}")
+    if "jump" in ssh and ssh["jump"] is not None:
+        if not isinstance(ssh["jump"], dict):
+            raise UpdateError(f"target {t['name']} ssh.jump must be an object")
+        for k in ("host", "port", "user"):
+            if k not in ssh["jump"]:
+                raise UpdateError(f"target {t['name']} ssh.jump missing {k}")
     if t["kind"] == "xui":
         _need(t, "geo_dir", "panel")
         for k in ("base", "token"):
@@ -222,13 +228,45 @@ def ssh_connect(spec, attempts=4):
     for i in range(attempts):
         c = paramiko.SSHClient()
         c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        jump_client = None
         try:
-            sock = _proxy_socket(spec)
+            sock = None
+            if spec.get("jump"):
+                jump_client = ssh_connect(spec["jump"], attempts=2)
+                tr = jump_client.get_transport()
+                if tr is None or not tr.is_active():
+                    raise paramiko.SSHException("jump transport inactive")
+                sock = tr.open_channel(
+                    "direct-tcpip",
+                    (spec["host"], int(spec["port"])),
+                    ("127.0.0.1", 0),
+                    timeout=15,
+                )
+            else:
+                sock = _proxy_socket(spec)
             c.connect(**connect_kwargs, sock=sock) if sock else c.connect(**connect_kwargs)
+            if jump_client is not None:
+                c._jump_client = jump_client
+                orig_close = c.close
+                def _close_with_jump(_orig=orig_close, _jc=jump_client):
+                    try:
+                        _orig()
+                    finally:
+                        try:
+                            _jc.close()
+                        except Exception:
+                            pass
+                c.close = _close_with_jump
             return c
         except paramiko.AuthenticationException:
+            if jump_client is not None:
+                try: jump_client.close()
+                except Exception: pass
             raise  # config error — never retry
         except (paramiko.SSHException, EOFError, OSError) as e:
+            if jump_client is not None:
+                try: jump_client.close()
+                except Exception: pass
             last = e
             if i < attempts - 1:
                 print(f"  [ssh] {spec['user']}@{spec['host']}:{spec['port']} handshake failed ({type(e).__name__}), retry {i+2}/{attempts}…")

@@ -17,12 +17,41 @@ import (
 
 var youtubeKW = []string{"youtube", "youtu.be", "ytimg", "googlevideo", "withyoutube"}
 
-var extraDomains = []string{"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org", "shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com"}
+var extraDomains = []string{
+	"rulate.ru", "hentailib.me", "mangalib.me", "cdnlibs.org", "hentaicdn.org",
+	"shlib.life", "ranobelib.me", "bllate.org", "z.ai", "computop-paygate.com",
+	// International ByteDance / TikTok CDN, attribution & mobile API domains (omitted from
+	// dlc.dat:TIKTOK because upstream keeps them in BYTEDANCE alongside ~900 CN-only domains):
+	"bytedapm.com", "ttcdn-us.com",
+	"ibyteimg.com", "ibytedtos.com", "bytetos.com", "byteeffecttos-g.com",
+	"bytegecko-i18n.com", "byteigtm.com", "ibytedapm.com", "byteintl.com",
+	"byteintlapi.com", "byteicdn.com", "bytednsdoc.com", "bytefcdn-oversea.com",
+	"bytewadm.com", "snssdk.com", "pstatp.com", "sgpstatp.com",
+	"amemv.com", "bytedance.com",
+	"roovza-launches.appsflyersdk.com", "roovza.inapps.appsflyersdk.com",
+	"roovza.launches.appsflyersdk.com", "roovza.skadsdk.appsflyersdk.com",
+}
 
 var directDomains = []string{"grabcad.com"}
 
 // dlc.dat sections copied into DIRECT.
 var directDlcSections = []string{"AVITO", "ALIBABA"}
+
+// Public ByteDance / TikTok IPv4 subnets (AS396986, AS138699, AS11983 + TikTok Live/CDN)
+// omitted from upstream zkeenip.dat; injected into the IP section in main().
+var publicExtraIPs = []string{
+	// ByteDance own ASNs (AS396986, AS138699, AS11983) — TTQUIC UDP:443 & mobile APIs
+	"71.18.0.0/16", "101.45.0.0/16", "103.136.220.0/22", "130.44.212.0/22",
+	"139.177.224.0/19", "147.160.176.0/20", "180.240.234.0/23", "192.64.14.0/23",
+	"199.103.24.0/23", "202.52.240.0/21",
+	// TikTok Live / Edge / CDN IPv4 blocks resolved outside zkeenip.dat
+	"23.90.158.0/24", "43.132.65.0/24", "43.152.140.0/24", "43.152.186.0/24",
+	"43.168.74.0/24", "43.168.94.0/23", "43.168.100.0/23", "43.168.141.0/24",
+	"43.168.194.0/23", "43.175.146.0/24", "43.175.151.0/24", "43.175.152.0/24",
+	"89.127.0.0/24", "138.113.181.0/24", "143.20.90.0/24", "148.153.240.0/24",
+	"150.241.198.0/24", "156.251.73.0/24", "162.141.119.0/24", "180.240.134.0/24",
+	"193.118.38.0/24",
+}
 
 // Single hosts/CIDRs appended to the IP section (bare IP → /32). Personal infra IPs are NOT
 // hardcoded — supply them via --extra-ips (e.g. from a GitHub Secret in CI), see scripts/README.md.
@@ -34,7 +63,7 @@ var extraIPs = []string{}
 var extraYouTubeIPs = []string{}
 
 // Additional dlc.dat sections to inject into DOMAINS (by name)
-var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND"}
+var injectSections = []string{"EHENTAI", "GOOGLE-DEEPMIND", "TIKTOK"}
 
 // copyRule maps a dedicated output section to the dlc.dat sections copied into
 // it. Ordered slice — map iteration would make output non-deterministic.
@@ -103,6 +132,7 @@ func main() {
 	extraDomainsArg := flag.String("extra-domains", "", "Comma-separated extra domains to inject into DOMAINS (personal — supply via secret, not in source)")
 	extraDirectDomainsArg := flag.String("extra-direct-domains", "", "Comma-separated extra domains to inject into DIRECT (personal — supply via secret, not in source)")
 	flag.Parse()
+	extraIPs = append(append([]string(nil), publicExtraIPs...), extraIPs...)
 	if *extraIPsArg != "" {
 		for _, s := range strings.Split(*extraIPsArg, ",") {
 			if s = strings.TrimSpace(s); s != "" {
