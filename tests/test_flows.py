@@ -8,6 +8,9 @@ class FakeDeps:
         self.uploads = {}
         self.exec_log = []
         self.xray_alive = True
+        # Become alive after N pgrep checks (simulates x-ui child lag after systemctl).
+        self.xray_alive_after_checks = None
+        self._pgrep_count = 0
         self.restart_ok = True
         self.systemctl_restart_ok = None
         self.xkeen_rc = 0
@@ -52,8 +55,12 @@ class FakeDeps:
                     tmp, tgt = m.group(1), m.group(2)
                     self.box[tgt] = self.uploads.get(tmp, b"")
         elif "pgrep" in cmd:
-            out = "1234\n" if self.xray_alive else ""
-            rc = 0 if self.xray_alive else 1
+            self._pgrep_count += 1
+            alive = self.xray_alive
+            if self.xray_alive_after_checks is not None:
+                alive = self._pgrep_count >= self.xray_alive_after_checks
+            out = "1234\n" if alive else ""
+            rc = 0 if alive else 1
         elif "xkeen -restart" in cmd:
             rc = self.xkeen_rc
         return rc, out, ""
@@ -160,6 +167,49 @@ def test_apply_xui_panel_restart_fails_ssh_fallback_succeeds(tmp_path):
     assert r["ok"] is True
     assert "xray restarted" in r["msg"]
     assert any("systemctl restart x-ui" in c for c, _ in d.exec_log)
+    # sudo password must be passed for non-root fallback (not a stale apply sentinel)
+    assert any("systemctl restart x-ui" in c and sd == "PW" for c, sd in d.exec_log)
+
+
+def test_apply_xui_ssh_fallback_polls_until_xray_ready(tmp_path):
+    # Regression: systemctl restart x-ui returns before xray (child) is up.
+    # A single sleep(5)+pgrep used to false-fail and roll back good geo files.
+    t = {"name": "EST", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"}, "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.restart_ok = False
+    d.systemctl_restart_ok = True
+    d.xray_alive = False
+    d.xray_alive_after_checks = 4  # down for first 3 pgreps, up on 4th
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is True, r["msg"]
+    assert "ssh fallback" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"
+    assert d.box["/d/geo.dat"] == b"NEW_GEO"
+    assert not any(".bak" in c and "|| true" in c for c, _ in d.exec_log)
+
+
+def test_apply_xui_ssh_fallback_rollback_restarts_via_ssh(tmp_path):
+    # When SSH fallback was required (DPI), post-check failure rollback must
+    # re-restart via SSH — panel API stays unreachable.
+    t = {"name": "EST", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"}, "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.restart_ok = False
+    d.systemctl_restart_ok = True
+    d.xray_alive = False  # never comes back
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "rolled back" in r["msg"]
+    assert d.box["/d/ip.dat"] == b"OLD_IP"
+    systemctl_calls = [c for c, _ in d.exec_log if "systemctl restart x-ui" in c]
+    assert len(systemctl_calls) >= 2, systemctl_calls  # initial fallback + post-rollback
 
 
 def test_apply_router_restart_fails_returns_false(tmp_path):
