@@ -160,6 +160,37 @@ def test_apply_xui_panel_restart_fails_ssh_fallback_succeeds(tmp_path):
     assert r["ok"] is True
     assert "xray restarted" in r["msg"]
     assert any("systemctl restart x-ui" in c for c, _ in d.exec_log)
+    # sudo password must come from needs_sudo(user), not a leftover apply-loop stdin sentinel
+    sys_cmds = [(c, sd) for c, sd in d.exec_log if "systemctl restart x-ui" in c]
+    assert sys_cmds and all(sd == "PW" for _, sd in sys_cmds)
+
+
+def test_apply_xui_ssh_fallback_exception_keeps_files(tmp_path):
+    # Regression: ssh_exec timeout / jump drop during systemctl fallback must NOT
+    # roll back via the mid-apply except handler — same contract as panel restart
+    # failure: keep newly written geo files.
+    t = {"name": "FIN", "kind": "xui", "ssh": {"host": "h", "port": 53908, "user": "seedmon"},
+         "geo_dir": "/d", "sudo_password": "PW", "panel": {"base": "b", "token": "t"}}
+    golden = {"geoip.dat": {"path": str(tmp_path / "geoip.dat"), "sha": ugf.sha256_bytes(b"NEW_IP")},
+              "geosite.dat": {"path": str(tmp_path / "geosite.dat"), "sha": ugf.sha256_bytes(b"NEW_GEO")}}
+    for rel, b in [("geoip.dat", b"NEW_IP"), ("geosite.dat", b"NEW_GEO")]:
+        (tmp_path / rel).write_bytes(b)
+    d = FakeDeps()
+    d.restart_ok = False
+    real_exec = d.ssh_exec
+
+    def flaky_exec(client, cmd, stdin_data=None):
+        if "systemctl restart x-ui" in cmd:
+            raise ugf.UpdateError("ssh_exec timed out after 60s: systemctl restart x-ui")
+        return real_exec(client, cmd, stdin_data=stdin_data)
+
+    d.ssh_exec = flaky_exec
+    r = ugf.apply_xui(t, golden, force=False, deps=d)
+    assert r["ok"] is False
+    assert "restart API failed" in r["msg"]
+    assert "rolled back" not in r["msg"]
+    assert d.box["/d/ip.dat"] == b"NEW_IP"
+    assert d.box["/d/geo.dat"] == b"NEW_GEO"
 
 
 def test_apply_router_restart_fails_returns_false(tmp_path):

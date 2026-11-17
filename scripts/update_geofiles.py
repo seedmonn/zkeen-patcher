@@ -399,14 +399,24 @@ def apply_xui(t, golden, force, deps, no_restart=False):
         ok = deps.restart_xray(t["panel"]["base"], t["panel"]["token"])
         restarted_via = "xray restarted"
         if not ok:
-            # Fallback to SSH restart if panel API failed (e.g. non-standard panel port blocked by DPI)
-            restart_cmd = "systemctl restart x-ui"
-            if needs_sudo(user):
-                restart_cmd = f"sudo -S -p '' {restart_cmd}"
-            rc, _, _ = deps.ssh_exec(client, restart_cmd, stdin_data=(sudo_pw if stdin else None))
-            if rc == 0:
-                ok = True
-                restarted_via = "xray restarted (via ssh fallback)"
+            # Fallback to SSH restart if panel API failed (e.g. non-standard panel port blocked by DPI).
+            # Errors here must NOT propagate to the mid-apply except handler: that path rolls
+            # back written files, but a restart-phase failure is supposed to keep the new geo
+            # (same as panel API failure below). Jump hosts / slow systemctl make ssh_exec
+            # timeout or drop especially likely during `systemctl restart x-ui`.
+            try:
+                restart_cmd = "systemctl restart x-ui"
+                if needs_sudo(user):
+                    restart_cmd = f"sudo -S -p '' {restart_cmd}"
+                rc, _, _ = deps.ssh_exec(
+                    client, restart_cmd,
+                    stdin_data=(sudo_pw if needs_sudo(user) else None),
+                )
+                if rc == 0:
+                    ok = True
+                    restarted_via = "xray restarted (via ssh fallback)"
+            except Exception:
+                ok = False
         if not ok:
             return {"ok": False, "msg": f"{name}: restart API failed; files written but xray NOT restarted", "sha": applied}
         deps.sleep(5)
